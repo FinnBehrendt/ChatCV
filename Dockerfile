@@ -1,14 +1,18 @@
 # syntax=docker/dockerfile:1.7
-FROM python:3.12
+FROM ghcr.io/prefix-dev/pixi:0.64.0 AS build
 
 WORKDIR /app
-COPY requirements.txt .
-RUN pip install -r requirements.txt
+COPY pixi.toml pixi.lock ./
+RUN --mount=type=cache,target=/root/.cache/rattler \
+    pixi install --locked -e runtime
 
-# Use the token only via a secret mount during this RUN.
-# Nothing is persisted in layers or ENV.
-# Only install guardrails if token is provided
+# Use the locked interpreter for the optional Hub installer as well.
+ENV PATH="/app/.pixi/envs/runtime/bin:${PATH}"
+
+# Hub validators are optional additions outside the Pixi lockfile. Keep their
+# credentials and installer caches in the build stage, not the runtime image.
 RUN --mount=type=secret,id=guardrails_token \
+    --mount=type=tmpfs,target=/root \
     if [ -f /run/secrets/guardrails_token ] && [ -s /run/secrets/guardrails_token ]; then \
         echo "Installing Guardrails AI with provided token..." && \
         guardrails configure --token "$(cat /run/secrets/guardrails_token)" --disable-metrics --disable-remote-inferencing && \
@@ -19,22 +23,33 @@ RUN --mount=type=secret,id=guardrails_token \
         echo "No Guardrails token provided - skipping Guardrails AI installation"; \
     fi
 
-# Create application user and directories
-RUN useradd --create-home --shell /bin/bash app && \
-    mkdir -p /app/logs /app/data/vector_db && \
-    chown -R app:app /app
+FROM ghcr.io/prefix-dev/pixi:0.64.0 AS runtime
 
-RUN mkdir -p /app/logs && \
-    chown -R app:app /app/logs && \
-    chmod 755 /app/logs
+WORKDIR /app
+# Keep the prefix identical: Conda environments are not generally relocatable.
+COPY --from=build /app/.pixi/envs/runtime /app/.pixi/envs/runtime
+COPY pixi.toml pixi.lock ./
+ENV PATH="/app/.pixi/envs/runtime/bin:${PATH}"
+
+RUN useradd --uid 10001 --create-home --shell /bin/bash app
+
+COPY app/ ./app/
+COPY config/ ./config/
+COPY static/ ./static/
+COPY templates/ ./templates/
+COPY main.py ./
+COPY --chown=app:app data/ ./data/
+
+RUN mkdir -p /app/logs /app/data/vector_db && \
+    chown -R app:app /app/logs /app/data
 
 ENV LOG_DIR=/app/logs
 ENV LOG_LEVEL=INFO
 ENV DOCKER_CONTAINER=true
 
-COPY . .
-
 VOLUME ["/app/logs", "/app/data/vector_db"]
 
+USER app
 EXPOSE 8000
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# No dependency resolution or installation on container startup.
+CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
