@@ -2,8 +2,8 @@
 
 Ever wished recruiters could just *ask* your resume questions instead of skimming through bullet points? That's exactly what ChatCV does.
 
+[![CI](https://github.com/FinnBehrendt/ChatCV/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/FinnBehrendt/ChatCV/actions/workflows/ci.yml)
 [![Docker](https://img.shields.io/badge/Docker-Ready-blue)](./Dockerfile)
-[![License](https://img.shields.io/badge/License-MIT-green)](./LICENSE)
 
 ## Demo
 
@@ -75,7 +75,7 @@ pixi run dev
 | `pixi run format` | Apply Black formatting |
 | `pixi run typecheck` | Run Mypy |
 | `pixi run security` | Run Bandit |
-| `pixi run check` | Run all checks; existing findings may need separate fixes |
+| `pixi run check` | Run tests, lint, formatting, type and security checks |
 | `pixi run dev` | Start the app with automatic reload |
 | `pixi run start` | Start the app without reload |
 
@@ -96,6 +96,21 @@ dependencies remain on the 0.3-compatible API family used by this application.
 Starlette stays below 1.0 while the app uses the older `TemplateResponse`
 calling convention. These compatibility bounds avoid an API migration as part
 of environment setup.
+
+## Continuous Integration
+
+Pull requests targeting `main` and pushes to `main` or `develop` run Ruff,
+Black, Mypy, Bandit and pytest with coverage using the locked Pixi environment.
+
+Pushes to `main` additionally build the Docker image and verify that its
+`/health` endpoint responds successfully. The Docker job is skipped in pull
+requests. Images are not automatically published or deployed.
+
+Run the same code-quality checks locally before opening a pull request:
+
+```bash
+pixi run --locked check
+```
 
 ## Getting Started with Docker
 
@@ -226,7 +241,21 @@ Got ideas? Found bugs? Want to add features?
 
 Just open an issue or send a PR. I'm always looking to make this better.
 
-**Before you code:** Run `pre-commit install` so the CI doesn't yell at you.
+### Local commit checks
+
+After installing the Pixi environment, activate the Git hook once per clone so the CI doesn't yell at you:
+
+```bash
+pixi run --locked pre-commit install
+```
+To run all hooks manually:
+
+```bash
+pixi run --locked pre-commit run --all-files
+```
+
+Pixi must be available on the `PATH` of the terminal or Git client creating the
+commit.
 
 ---
 
