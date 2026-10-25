@@ -162,25 +162,29 @@ async def chat(
 
     response_time = time.time() - start_time
 
-    # Extract response text and sources for logging
-    response_text = ""
-    sources = result.get("sources", [])
-    if result.get("answer") and result["answer"].get("answer"):
-        response_text = result["answer"]["answer"]
-    elif result.get("answer"):
-        response_text = str(result["answer"])
+    # Optional analytics must not prevent delivery of a successful chat response.
+    try:
+        response_text = ""
+        sources = result.get("sources", [])
+        if result.get("answer") and result["answer"].get("answer"):
+            response_text = result["answer"]["answer"]
+        elif result.get("answer"):
+            response_text = str(result["answer"])
 
-    # Advanced logging with session context
-    advanced_analytics.log_chat_interaction_advanced(
-        user_code=user_code,
-        company=company,
-        query=query,
-        response=response_text,
-        response_time=response_time,
-        sources=sources,
-        session_token=session_token or "",
-        metadata={"llm_model": "gpt-4o-mini", "pipeline": "RAG"},
-    )
+        advanced_analytics.log_chat_interaction_advanced(
+            user_code=user_code,
+            company=company,
+            query=query,
+            response=response_text,
+            response_time=response_time,
+            sources=sources,
+            session_token=session_token or "",
+            metadata={"llm_model": "gpt-4o-mini", "pipeline": "RAG"},
+        )
+    except Exception:
+        api_logger.warning(
+            "Analytics recording failed; returning chat response", exc_info=True
+        )
 
     api_logger.info(f"Chat response generated for {company} in {response_time:.2f}s")
     return result
@@ -286,6 +290,6 @@ async def job_match_endpoint(request: Request, user_code: str = Depends(require_
     except ValueError as e:
         api_logger.error(f"Job matching validation error for {company}: {e!s}")
         raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        api_logger.error(f"Job matching processing error for {company}: {e!s}")
+    except Exception:
+        api_logger.exception("Job matching processing error")
         raise HTTPException(status_code=500, detail="Job matching analysis failed")

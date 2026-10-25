@@ -76,9 +76,11 @@ def setup_logging(
 
             print(f"File logging enabled: {log_path.absolute()}")
 
-        except Exception as e:
-            print(f"Warning: File logging failed ({e}). Using console logging only.")
-
+        except OSError as error:
+            print(
+                f"Warning: File logging failed: {error}. Using console logging only.",
+                file=sys.stderr,
+            )
     # Configure root logger
     logging.basicConfig(
         level=getattr(logging, log_level, logging.INFO),

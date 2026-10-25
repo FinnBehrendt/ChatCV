@@ -115,9 +115,7 @@ class SummaryGenerator:
             }
 
         except Exception as e:
-            summary_logger.error(
-                f"Summary generation failed ({e.__class__.__name__}): {e!s}"
-            )
+            summary_logger.exception("Summary generation failed")
             return {
                 "summary_md": "Unable to generate summary. Please try again.",
                 "skills": [],

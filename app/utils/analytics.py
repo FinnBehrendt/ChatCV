@@ -1,6 +1,6 @@
 import json
 import os
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from app.config import config
@@ -46,8 +46,8 @@ class AdvancedAnalytics:
             try:
                 self.langsmith_client = LangSmithClient()
                 analytics_logger.info("LangSmith client initialized successfully")
-            except Exception as e:
-                analytics_logger.warning(f"Failed to initialize LangSmith client: {e}")
+            except Exception:
+                analytics_logger.exception("Failed to initialize LangSmith client")
                 self.langsmith_client = None
         else:
             self.langsmith_client = None
@@ -100,7 +100,7 @@ class AdvancedAnalytics:
                     extra={
                         "user_code": user_code,
                         "company": company,
-                        "session_start": datetime.utcnow().isoformat(),
+                        "session_start": datetime.now(UTC).isoformat(),
                         "session_type": "conversation",
                     },
                     tags=["chatcv", "conversation", company.lower().replace(" ", "-")],
@@ -116,10 +116,8 @@ class AdvancedAnalytics:
                 }
                 analytics_logger.info(f"Conversation tracking started for {company}")
 
-            except Exception as e:
-                analytics_logger.error(
-                    f"LangSmith session start error ({e.__class__.__name__}): {e!s}"
-                )
+            except Exception:
+                analytics_logger.exception("LangSmith session start error")
         else:
             # Log session start even without LangSmith
             analytics_logger.info(
@@ -162,10 +160,12 @@ class AdvancedAnalytics:
                     self.langsmith_client.update_run(
                         session_info["run_id"],
                         outputs={"total_queries": query_count},
-                        end_time=datetime.utcnow(),
+                        end_time=datetime.now(UTC),
                     )
-                except Exception as e:
-                    analytics_logger.warning(f"Failed to end LangSmith run: {e}")
+                except Exception:
+                    analytics_logger.warning(
+                        "Failed to end LangSmith run", exc_info=True
+                    )
 
             del self.active_chat_runs[session_token]
 
@@ -269,10 +269,8 @@ class AdvancedAnalytics:
             with open(self.analytics_file, "a") as f:
                 f.write(f"JOB_MATCH,{json.dumps(log_data)}\n")
 
-        except Exception as e:
-            analytics_logger.error(
-                f"Error logging job matching analysis ({e.__class__.__name__}): {e!s}"
-            )
+        except Exception:
+            analytics_logger.exception("Error logging job matching analysis")
 
 
 def log_chat_interaction(
@@ -290,7 +288,7 @@ def log_chat_interaction(
     """
     try:
         log_entry = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "type": "chat",
             "user_code": user_code,
             "company": company,
@@ -308,10 +306,8 @@ def log_chat_interaction(
             with open(config.data.analytics_log_path, "a") as f:
                 f.write(f"CHAT,{json.dumps(log_entry)}\n")
 
-    except Exception as e:
-        analytics_logger.error(
-            f"Analytics logging error ({e.__class__.__name__}): {e!s}"
-        )
+    except Exception:
+        analytics_logger.exception("Analytics logging error")
 
 
 def log_summary_request(
@@ -328,7 +324,7 @@ def log_summary_request(
     """
     try:
         log_entry = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "type": "summary",
             "user_code": user_code,
             "company": company,
@@ -343,10 +339,8 @@ def log_summary_request(
             with open(config.data.analytics_log_path, "a") as f:
                 f.write(f"SUMMARY,{json.dumps(log_entry)}\n")
 
-    except Exception as e:
-        analytics_logger.error(
-            f"Analytics logging error ({e.__class__.__name__}): {e!s}"
-        )
+    except Exception:
+        analytics_logger.exception("Analytics logging error")
 
 
 def log_login_event(user_code: str, company: str, success: bool) -> None:
@@ -360,7 +354,7 @@ def log_login_event(user_code: str, company: str, success: bool) -> None:
     """
     try:
         log_entry = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "type": "login",
             "user_code": user_code,
             "company": company,
@@ -374,10 +368,8 @@ def log_login_event(user_code: str, company: str, success: bool) -> None:
             with open(config.data.analytics_log_path, "a") as f:
                 f.write(f"LOGIN,{json.dumps(log_entry)}\n")
 
-    except Exception as e:
-        analytics_logger.error(
-            f"Analytics logging error ({e.__class__.__name__}): {e!s}"
-        )
+    except Exception:
+        analytics_logger.exception("Analytics logging error")
 
 
 def get_analytics_summary() -> dict[str, Any]:
@@ -416,9 +408,11 @@ def get_analytics_summary() -> dict[str, Any]:
                         chat_count += 1
                     elif event_type == "SUMMARY":
                         summary_count += 1
-            except Exception as e:
-                # Skip malformed lines silently
-                analytics_logger.warning(f"Malformed analytics line skipped: {e}")
+            except Exception:
+                # Skip malformed lines without aborting the summary.
+                analytics_logger.warning(
+                    "Malformed analytics line skipped", exc_info=True
+                )
                 continue
 
         summary = {
@@ -430,8 +424,6 @@ def get_analytics_summary() -> dict[str, Any]:
         }
         analytics_logger.info("Analytics summary generated successfully.")
         return summary
-    except Exception as e:
-        analytics_logger.error(
-            f"Error generating analytics summary ({e.__class__.__name__}): {e!s}"
-        )
-        return {"error": str(e)}
+    except Exception:
+        analytics_logger.exception("Error generating analytics summary.")
+        return {"error": "Analytics summary is currently unavailable"}

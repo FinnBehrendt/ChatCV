@@ -159,9 +159,7 @@ class JobMatchingAnalyzer:
             }
 
         except Exception as e:
-            job_matching_logger.error(
-                f"Job matching analysis error ({e.__class__.__name__}): {e!s}"
-            )
+            job_matching_logger.exception("Job matching analysis error")
             return {
                 "analysis": "Unable to complete job matching analysis. Please try again.",
                 "error": str(e),

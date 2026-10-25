@@ -116,8 +116,10 @@ class ChatRAGPipeline:
                     ("human", "{input}"),
                     (
                         "human",
-                        "given the above conversation, generate a search query "
-                        "to lookup content important for the conversation.",
+                        (
+                            "given the above conversation, generate a search query "
+                            "to lookup content important for the conversation."
+                        ),
                     ),
                 ]
             )
@@ -224,10 +226,8 @@ class ChatRAGPipeline:
         except ValueError as validation_error:
             rag_logger.warning(f"Query validation failed: {validation_error!s}")
             return {"answer": {"answer": str(validation_error)}, "sources": []}
-        except Exception as unexpected_error:
-            rag_logger.error(
-                f"Unexpected error in chat completion ({type(unexpected_error).__name__}): {unexpected_error!s}"
-            )
+        except Exception:
+            rag_logger.exception("Unexpected error in chat completion")
             formatted_fallback = self.config.chat_fallback_response.format(
                 candidate_name=self.config.candidate.name
             )

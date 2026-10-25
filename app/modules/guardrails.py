@@ -20,7 +20,7 @@ except ImportError:
         def validate(self, text):
             # Basic validation without guardrails
             if any(word in text.lower() for word in ["fuck", "shit", "damn"]):
-                raise Exception("Content contains inappropriate language")
+                raise ValueError("Content contains inappropriate language")
             return text
 
     class MockToxicLanguage:
@@ -160,8 +160,8 @@ class QueryValidator:
                 mock_guard = Guard()
                 mock_guard.validate(response)
             return response
-        except Exception as e:
-            self.logger.warning(f"Response validation failed: {e!s}")
+        except Exception:
+            self.logger.warning("Response validation failed", exc_info=True)
             return self.config.chat_fallback_response
 
 
