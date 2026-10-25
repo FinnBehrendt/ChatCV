@@ -1,7 +1,9 @@
-import pytest
 from unittest.mock import Mock
-from app.modules.guardrails import QueryValidator
+
+import pytest
+
 from app.config import AppConfig
+from app.modules.guardrails import QueryValidator
 
 
 class TestQueryValidator:

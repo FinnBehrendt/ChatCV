@@ -1,0 +1,13 @@
+[lint]
+# Recognize the loggers re-exported by the shared logging configuration.
+logger-objects = [
+    "app.utils.logging_config.analytics_logger",
+    "app.utils.logging_config.api_logger",
+    "app.utils.logging_config.auth_logger",
+    "app.utils.logging_config.rag_logger",
+    "app.utils.logging_config.summary_logger",
+    "app.utils.logging_config.job_matching_logger",
+    "app.utils.logging_config.main_logger",
+    "app.utils.logging_config.config_logger",
+    "app.utils.logging_config.docker_logger",
+]

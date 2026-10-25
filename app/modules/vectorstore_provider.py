@@ -1,14 +1,15 @@
-from langchain_community.document_loaders import PyPDFLoader, TextLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_chroma import Chroma
-from langchain_core.documents import Document
-import re
+import logging
 import os
-from app.modules.model_provider import ModelProvider
+import re
+
+from langchain_chroma import Chroma
+from langchain_community.document_loaders import PyPDFLoader, TextLoader
+from langchain_core.documents import Document
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+
 from app.config import AppConfig
 from app.modules.guardrails import InputValidator
-import logging
-from typing import List, Optional
+from app.modules.model_provider import ModelProvider
 
 
 class VectorStoreManager:
@@ -17,7 +18,7 @@ class VectorStoreManager:
     def __init__(
         self,
         config: AppConfig,
-        model_provider: Optional[ModelProvider],
+        model_provider: ModelProvider | None,
         logger: logging.Logger,
     ) -> None:
         """
@@ -50,8 +51,8 @@ class VectorStoreManager:
             self.logger.info(f"Loaded {len(cv_documents)} CV documents")
             for doc in cv_documents:
                 doc.metadata["source"] = "cv"
-        except Exception as e:
-            self.logger.error(f"Failed to load CV documents: {e}")
+        except Exception:
+            self.logger.exception("Failed to load CV documents")
             cv_documents = []
 
         try:
@@ -61,8 +62,8 @@ class VectorStoreManager:
             self.logger.info(f"Loaded {len(about_documents)} About Me documents")
             for doc in about_documents:
                 doc.metadata["source"] = "about_me"
-        except Exception as e:
-            self.logger.error(f"Failed to load About Me documents: {e}")
+        except Exception:
+            self.logger.exception("Failed to load About Me documents")
             about_documents = []
 
         # Combine document sources
@@ -155,8 +156,10 @@ class VectorStoreManager:
             self.logger.info(f"Vector database contains {collection.count()} documents")
             return True
 
-        except Exception as e:
-            self.logger.warning(f"Error checking vector database population: {e}")
+        except Exception:
+            self.logger.warning(
+                "Error checking vector database population", exc_info=True
+            )
             return False
 
 
@@ -186,8 +189,8 @@ class DocumentHandler:
             cv_loader = PyPDFLoader(self.config.data.cv_path)
             cv_documents = cv_loader.load()
             self.logger.info(f"Loaded {len(cv_documents)} CV document pages")
-        except Exception as e:
-            self.logger.error(f"Failed to load CV document: {e}")
+        except Exception:
+            self.logger.exception("Failed to load CV document")
             return ""
 
         cv_content = [doc.page_content for doc in cv_documents if doc.page_content]
@@ -231,7 +234,7 @@ class DocumentHandler:
             metadata={"source": "text_input", "type": "job_description"},
         )
 
-    def load_documents(self) -> List[Document]:
+    def load_documents(self) -> list[Document]:
         """
         Load and prepare CV and About Me documents for summarization.
 
@@ -247,8 +250,8 @@ class DocumentHandler:
             self.logger.info(f"Loaded {len(docs_cv)} CV documents")
             for doc in docs_cv:
                 doc.metadata["source"] = "cv"
-        except Exception as e:
-            self.logger.error(f"Failed to load CV documents: {e}")
+        except Exception:
+            self.logger.exception("Failed to load CV documents")
             docs_cv = []
 
         docs_about = []
@@ -260,8 +263,8 @@ class DocumentHandler:
                 self.logger.info(f"Loaded {len(docs_about)} About Me documents")
                 for doc in docs_about:
                     doc.metadata["source"] = "about_me"
-            except Exception as e:
-                self.logger.error(f"Failed to load About Me documents: {e}")
+            except Exception:
+                self.logger.exception("Failed to load About Me documents")
                 docs_about = []
         else:
             self.logger.warning(f"About Me document not found at path: {about_me_path}")

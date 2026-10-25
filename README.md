@@ -44,7 +44,60 @@ ChatCV lets you stand out by turning your resume into a conversation. Instead of
 
 ---
 
-## Getting Started
+## Local development with Pixi
+
+Use [Pixi](https://pixi.sh/) 0.64.0 or newer to manage the Python 3.12 environment.
+The manifest and lockfile cover Apple silicon macOS, Linux x86-64 and Linux ARM64. Pixi
+installs Python and dependencies into the ignored `.pixi/` directory; your
+system Python is not used.
+
+From the repository root:
+
+```bash
+pixi install --locked
+pixi run test
+```
+
+The default environment includes development tools. Tests disable external
+LangSmith tracing and do not require model-server access. To run the app, copy
+`.env.example` to `.env`, configure your model credentials and documents, then run:
+
+```bash
+pixi run dev
+```
+
+| Command | Purpose |
+| --- | --- |
+| `pixi run test` | Run the tests |
+| `pixi run test-cov` | Run tests with coverage |
+| `pixi run lint` | Check with Ruff |
+| `pixi run format-check` | Check formatting without editing files |
+| `pixi run format` | Apply Black formatting |
+| `pixi run typecheck` | Run Mypy |
+| `pixi run security` | Run Bandit |
+| `pixi run check` | Run all checks; existing findings may need separate fixes |
+| `pixi run dev` | Start the app with automatic reload |
+| `pixi run start` | Start the app without reload |
+
+For an individual test, use
+`pixi run python -m pytest tests/test_guardrails.py -v`.
+`pixi shell` opens an interactive shell inside the environment.
+
+The `runtime` environment omits development tools:
+
+```bash
+pixi install --locked -e runtime
+pixi run -e runtime start
+```
+
+Update dependencies through Pixi and review `pixi.toml` and `pixi.lock` together.
+Keep both files in version control; never commit `.pixi/`. The LangChain
+dependencies remain on the 0.3-compatible API family used by this application.
+Starlette stays below 1.0 while the app uses the older `TemplateResponse`
+calling convention. These compatibility bounds avoid an API migration as part
+of environment setup.
+
+## Getting Started with Docker
 
 **What you need:**
 - Docker & Docker Compose
@@ -82,18 +135,38 @@ GUARDRAILS_TOKEN="your_guardrails_token"   # Extra safety (slower build)
 ```bash
 docker compose up --build
 ```
-Alternatively, without Docker:
+Or build and run the image directly, without Compose:
+
 ```bash
-# install requirements
-pip install -r requirements.txt
-# optionally, install guardrails - you can skip these steps!
-guardrails configure # interactive! You will need a token!
-guardrails hub install hub://guardrails/toxic_language
-guardrails hub install hub://guardrails/reading_time
-guardrails hub install hub://guardrails/profanity_free
-# run the app
-uvicorn main:app
+docker build -t chatcv:local .
+docker run --rm --env-file .env -p 8000:8000 chatcv:local
 ```
+
+The multi-stage Dockerfile uses Pixi 0.64.0 and
+`pixi install --locked -e runtime`. Only the installed runtime environment and
+application files are copied into the final stage: no development tools,
+installer caches, local planning notes or `.env` files. The app runs as a
+non-root user and starts without installing or resolving dependencies.
+
+Both `linux/amd64` and `linux/arm64` are covered by the lockfile. Docker uses the
+host architecture by default. For an x86-64 cloud server, build explicitly with
+`docker build --platform linux/amd64 -t chatcv:local .`.
+
+Optional Guardrails Hub validators can still be installed using a build secret:
+
+```bash
+# GUARDRAILS_TOKEN must already be exported in your shell.
+docker build --secret id=guardrails_token,env=GUARDRAILS_TOKEN -t chatcv:local .
+```
+
+These extra Hub packages and their model downloads are **not** locked by Pixi.
+The token is mounted only during installation; the temporary configuration is
+not copied into the runtime image. Downloaded model caches are not copied either,
+so validators may need to download models again at runtime. Without this secret,
+the app uses its existing basic validation fallback.
+
+For development without Docker, use `pixi run dev` as described above.
+
 ### 5. Try It Out
 Head to `http://localhost:8000` and start chatting with your resume!
 

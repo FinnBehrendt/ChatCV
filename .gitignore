@@ -24,6 +24,13 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+.pixi/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
 
 # Vector database
 data/vector_db/
@@ -42,3 +49,7 @@ logs
 # OS
 .DS_Store
 Thumbs.db
+
+# Local planning and agent working notes
+/.codex-local/
+/AGENTS.md

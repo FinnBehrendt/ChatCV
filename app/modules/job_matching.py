@@ -6,19 +6,19 @@ using RAG-based assessment to evaluate candidate fit.
 """
 
 import threading
-from typing import Dict, Any, Optional
-from dotenv import load_dotenv
-from app.utils.logging_config import job_matching_logger
-from app.config import config
-from app.modules.vectorstore_provider import VectorStoreManager, DocumentHandler
-from app.modules.model_provider import ModelProvider
-from app.modules.guardrails import InputValidator
-
-from langchain_core.prompts import ChatPromptTemplate
-from langchain.chains.combine_documents import create_stuff_documents_chain
-from langchain_core.documents import Document
+from typing import Any
 
 import langsmith
+from dotenv import load_dotenv
+from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain_core.documents import Document
+from langchain_core.prompts import ChatPromptTemplate
+
+from app.config import config
+from app.modules.guardrails import InputValidator
+from app.modules.model_provider import ModelProvider
+from app.modules.vectorstore_provider import DocumentHandler, VectorStoreManager
+from app.utils.logging_config import job_matching_logger
 
 load_dotenv()
 
@@ -34,7 +34,7 @@ class JobMatchingAnalyzer:
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
-                    cls._instance = super(JobMatchingAnalyzer, cls).__new__(cls)
+                    cls._instance = super().__new__(cls)
                     cls._instance._initialized = False
         return cls._instance
 
@@ -93,8 +93,8 @@ class JobMatchingAnalyzer:
         metadata={},
     )
     def analyze_job_match(
-        self, job_description: Document, user_metadata: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
+        self, job_description: Document, user_metadata: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         """
         Analyze job match using RAG-based assessment.
 
@@ -159,9 +159,7 @@ class JobMatchingAnalyzer:
             }
 
         except Exception as e:
-            job_matching_logger.error(
-                f"Job matching analysis error ({e.__class__.__name__}): {str(e)}"
-            )
+            job_matching_logger.exception("Job matching analysis error")
             return {
                 "analysis": "Unable to complete job matching analysis. Please try again.",
                 "error": str(e),
@@ -199,8 +197,8 @@ def process_job_description(text: str) -> Document:
 
 
 def analyze_job_match(
-    job_description: Document, user_metadata: Optional[Dict[str, Any]] = None
-) -> Dict[str, Any]:
+    job_description: Document, user_metadata: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """Analyze job match for given job description.
 
     Args:

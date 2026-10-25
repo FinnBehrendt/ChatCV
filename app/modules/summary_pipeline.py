@@ -6,17 +6,17 @@ using document summarization techniques with LangChain and LLM providers.
 """
 
 import threading
-from typing import Dict, Any, Optional
+from typing import Any
+
+import langsmith
 from dotenv import load_dotenv
-from app.utils.logging_config import summary_logger
-from app.config import config
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import PromptTemplate
 
+from app.config import config
 from app.modules.model_provider import ModelProvider
 from app.modules.vectorstore_provider import DocumentHandler
-
-import langsmith
+from app.utils.logging_config import summary_logger
 
 load_dotenv()
 
@@ -32,7 +32,7 @@ class SummaryGenerator:
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
-                    cls._instance = super(SummaryGenerator, cls).__new__(cls)
+                    cls._instance = super().__new__(cls)
                     cls._instance._initialized = False
         return cls._instance
 
@@ -84,8 +84,8 @@ class SummaryGenerator:
         metadata={},
     )
     def generate_summary(
-        self, style: str = "bullet", user_metadata: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
+        self, style: str = "bullet", user_metadata: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         """Generate professional summary"""
         summary_logger.info(f"Starting summary generation with style: {style}")
         self._initialize_summary_chain()
@@ -115,9 +115,7 @@ class SummaryGenerator:
             }
 
         except Exception as e:
-            summary_logger.error(
-                f"Summary generation failed ({e.__class__.__name__}): {str(e)}"
-            )
+            summary_logger.exception("Summary generation failed")
             return {
                 "summary_md": "Unable to generate summary. Please try again.",
                 "skills": [],
@@ -133,8 +131,8 @@ def get_summary_generator() -> SummaryGenerator:
 
 # Backward compatibility functions
 def get_auto_summary(
-    style: str = "bullet", user_metadata: Optional[Dict[str, Any]] = None
-) -> Dict[str, Any]:
+    style: str = "bullet", user_metadata: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """Backward compatible summary generation function"""
     generator = get_summary_generator()
     return generator.generate_summary(style, user_metadata)
@@ -152,7 +150,7 @@ def get_embedding_model() -> Any:
     return generator.model_provider.get_embedding_model()
 
 
-def init_summary_chain(user_metadata: Optional[Dict[str, Any]] = None) -> None:
+def init_summary_chain(user_metadata: dict[str, Any] | None = None) -> None:
     """Legacy function for initializing summary chain"""
     generator = get_summary_generator()
     generator._initialize_summary_chain()

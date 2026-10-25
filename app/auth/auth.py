@@ -1,8 +1,9 @@
-from fastapi import HTTPException, Request
 import secrets
-from typing import Dict, Optional
-from app.utils.logging_config import auth_logger
+
+from fastapi import HTTPException, Request
+
 from app.config import config
+from app.utils.logging_config import auth_logger
 
 # Load invite codes from configuration and environment variable
 # INVITE_CODES is a dictionary where keys are invite codes and values contain user info and active status
@@ -10,7 +11,7 @@ INVITE_CODES = config.invite_codes
 auth_logger.info(f"Successfully loaded {len(INVITE_CODES)} total invite codes")
 
 # Active sessions mapping session_token to invite_code to track authenticated users
-active_sessions: Dict[str, str] = {}  # session_token -> invite_code
+active_sessions: dict[str, str] = {}  # session_token -> invite_code
 
 
 def is_auth_enabled() -> bool:
@@ -43,7 +44,7 @@ def validate_invite_code(code: str) -> bool:
     return code in INVITE_CODES and INVITE_CODES[code]["active"]
 
 
-def authenticate_with_code(code: str) -> Optional[str]:
+def authenticate_with_code(code: str) -> str | None:
     """
     Authenticate a user by their invite code and create a new session token upon success.
 
@@ -64,7 +65,7 @@ def authenticate_with_code(code: str) -> Optional[str]:
     return None
 
 
-def get_current_user(request: Request) -> Optional[str]:
+def get_current_user(request: Request) -> str | None:
     """
     Retrieve the current user's invite code from the session token cookie in the request.
 
@@ -112,7 +113,7 @@ def require_auth(request: Request) -> str:
     return user_code
 
 
-def get_user_info(invite_code: str) -> Dict:
+def get_user_info(invite_code: str) -> dict:
     """
     Retrieve user information associated with a given invite code.
 

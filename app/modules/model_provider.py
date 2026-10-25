@@ -1,9 +1,9 @@
-from langchain_openai import OpenAIEmbeddings, ChatOpenAI
-from langchain_ollama import OllamaEmbeddings, ChatOllama
+import logging
+
+from langchain_ollama import ChatOllama, OllamaEmbeddings
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
 from app.config import AppConfig
-import logging
-from typing import Union
 
 
 class ModelProvider:
@@ -27,7 +27,7 @@ class ModelProvider:
         self.config = config
         self.logger = logger
 
-    def get_language_model(self) -> Union[ChatOpenAI, ChatOllama]:
+    def get_language_model(self) -> ChatOpenAI | ChatOllama:
         """
         Initialize and return the language model instance based on the configuration.
 
@@ -56,7 +56,7 @@ class ModelProvider:
                 timeout=self.config.llm.timeout,
             )
 
-    def get_embedding_model(self) -> Union[OpenAIEmbeddings, OllamaEmbeddings]:
+    def get_embedding_model(self) -> OpenAIEmbeddings | OllamaEmbeddings:
         """
         Initialize and return the embedding model instance based on the configuration.
 

@@ -6,26 +6,27 @@ for interactive resume querying using LangChain, ChromaDB, and various LLM provi
 """
 
 import threading
-from typing import Dict, Any, Optional
+from typing import Any
+
 from dotenv import load_dotenv
-from app.utils.logging_config import rag_logger
-from app.config import config
-from app.modules.model_provider import ModelProvider
-from app.modules.vectorstore_provider import VectorStoreManager, DocumentHandler
-from app.modules.guardrails import QueryValidator
-
-
 from langchain.chains import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain.chains.history_aware_retriever import create_history_aware_retriever
-from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableLambda
+
+from app.config import config
+from app.modules.guardrails import QueryValidator
+from app.modules.model_provider import ModelProvider
+from app.modules.vectorstore_provider import DocumentHandler, VectorStoreManager
+from app.utils.logging_config import rag_logger
 
 # Optional LangSmith integration
 try:
-    import langsmith
     import os
+
+    import langsmith
 
     # Check if LangSmith should be enabled
     langsmith_tracing = os.getenv("LANGSMITH_TRACING", "false").lower() == "true"
@@ -72,7 +73,7 @@ class ChatRAGPipeline:
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
-                    cls._instance = super(ChatRAGPipeline, cls).__new__(cls)
+                    cls._instance = super().__new__(cls)
                     cls._instance._initialized = False
         return cls._instance
 
@@ -115,8 +116,10 @@ class ChatRAGPipeline:
                     ("human", "{input}"),
                     (
                         "human",
-                        "given the above conversation, generate a search query "
-                        "to lookup content important for the conversation.",
+                        (
+                            "given the above conversation, generate a search query "
+                            "to lookup content important for the conversation."
+                        ),
                     ),
                 ]
             )
@@ -179,8 +182,8 @@ class ChatRAGPipeline:
         run_type="llm", name="Chat Completion", tags=["chatcv", "rag"], metadata={}
     )
     def get_completion(
-        self, query: str, user_metadata: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
+        self, query: str, user_metadata: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         """
         Process chat query and return response with conversation history.
 
@@ -221,12 +224,10 @@ class ChatRAGPipeline:
             return {"answer": result, "sources": result.get("context", [])}
 
         except ValueError as validation_error:
-            rag_logger.warning(f"Query validation failed: {str(validation_error)}")
+            rag_logger.warning(f"Query validation failed: {validation_error!s}")
             return {"answer": {"answer": str(validation_error)}, "sources": []}
-        except Exception as unexpected_error:
-            rag_logger.error(
-                f"Unexpected error in chat completion ({type(unexpected_error).__name__}): {str(unexpected_error)}"
-            )
+        except Exception:
+            rag_logger.exception("Unexpected error in chat completion")
             formatted_fallback = self.config.chat_fallback_response.format(
                 candidate_name=self.config.candidate.name
             )
@@ -243,8 +244,8 @@ def get_chat_pipeline() -> ChatRAGPipeline:
 
 
 def get_chat_completion(
-    query: str, user_metadata: Optional[Dict[str, Any]] = None
-) -> Dict[str, Any]:
+    query: str, user_metadata: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """Get chat completion using thread-safe pipeline."""
     rag_logger.info("get_chat_completion invoked")
     pipeline = get_chat_pipeline()

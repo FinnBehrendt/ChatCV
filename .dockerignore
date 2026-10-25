@@ -1,0 +1,24 @@
+# Local working notes must not be sent to the builder or copied into images.
+.codex-local
+AGENTS.md
+.git
+
+# Runtime credentials are supplied separately.
+.env
+.env.*
+!.env.example
+
+__pycache__
+*.py[cod]
+.venv
+.pixi
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+coverage.xml
+htmlcov
+logs
+data/vector_db
+data/analytics.log
+.DS_Store
