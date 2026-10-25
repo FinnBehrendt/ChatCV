@@ -1,27 +1,14 @@
 repos:
-  - repo: https://github.com/psf/black
-    rev: 25.1.0
+  # Reuse the same locked tools and tasks as CI, without separate tool installs.
+  - repo: local
     hooks:
-      - id: black
-
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.11.13
-    hooks:
-      - id: ruff
-
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.16.0
-    hooks:
-      - id: mypy
-        args:
-          - --install-types
-          - --non-interactive
-
-  - repo: https://github.com/pycqa/flake8
-    rev: 6.1.0
-    hooks:
-      - id: flake8
-        args: [--max-line-length=120]
+      - id: pixi-check
+        name: Tests, lint, formatting, types and security (Pixi)
+        entry: pixi run --locked check
+        language: system
+        pass_filenames: false
+        # Each task checks the project, not only the staged files.
+        files: '^(app/|tests/|config/|main\.py$|pixi\.(toml|lock)$|ruff\.toml$|\.pre-commit-config\.yaml$)'
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
@@ -31,18 +18,3 @@ repos:
         exclude: '\.gif$'
       - id: end-of-file-fixer
       - id: trailing-whitespace
-
-  - repo: local
-    hooks:
-      - id: pytest
-        name: Run Pytest
-        entry: pytest
-        language: system
-        types: [python]
-        pass_filenames: false
-
-  - repo: https://github.com/PyCQA/bandit
-    rev: 1.7.7
-    hooks:
-      - id: bandit
-        args: ["--recursive", "--skip", "B101"]
