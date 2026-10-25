@@ -3,14 +3,13 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Dict, Optional
 
 
 def setup_logging(
-    log_dir: Optional[str] = None,
-    log_level: Optional[str] = None,
+    log_dir: str | None = None,
+    log_level: str | None = None,
     enable_file_logging: bool = True,
-) -> Dict[str, logging.Logger]:
+) -> dict[str, logging.Logger]:
     """
     Configure logging for the ChatCV application with persistent storage.
 
@@ -101,7 +100,7 @@ def setup_logging(
         "docker",
     ]
 
-    loggers: Dict[str, logging.Logger] = {}
+    loggers: dict[str, logging.Logger] = {}
     for name in logger_names:
         logger = logging.getLogger(f"chatcv.{name}")
         logger.setLevel(getattr(logging, log_level, logging.INFO))
@@ -126,7 +125,7 @@ def setup_logging(
 
 
 # Initialize loggers with environment-aware configuration
-LOGGERS: Dict[str, logging.Logger] = setup_logging()
+LOGGERS: dict[str, logging.Logger] = setup_logging()
 
 # Export loggers for easy import
 auth_logger: logging.Logger = LOGGERS["auth"]

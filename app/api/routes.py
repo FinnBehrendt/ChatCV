@@ -1,22 +1,23 @@
-from fastapi import APIRouter, Body, Query, Depends, HTTPException, Request, Response
-from app.modules.rag_pipeline import get_chat_completion
-from app.modules.summary_pipeline import get_auto_summary
-from app.modules.job_matching import (
-    process_job_description,
-    analyze_job_match,
-)
+import time
+
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
 
 from app.auth.auth import (
     authenticate_with_code,
-    require_auth,
-    get_user_info,
-    logout_user,
     get_current_user,
+    get_user_info,
     is_auth_enabled,
+    logout_user,
+    require_auth,
 )
-from app.utils.analytics import log_login_event, AdvancedAnalytics
+from app.modules.job_matching import (
+    analyze_job_match,
+    process_job_description,
+)
+from app.modules.rag_pipeline import get_chat_completion
+from app.modules.summary_pipeline import get_auto_summary
+from app.utils.analytics import AdvancedAnalytics, log_login_event
 from app.utils.logging_config import api_logger
-import time
 
 router = APIRouter()
 advanced_analytics = AdvancedAnalytics()
@@ -283,8 +284,8 @@ async def job_match_endpoint(request: Request, user_code: str = Depends(require_
         }
 
     except ValueError as e:
-        api_logger.error(f"Job matching validation error for {company}: {str(e)}")
+        api_logger.error(f"Job matching validation error for {company}: {e!s}")
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        api_logger.error(f"Job matching processing error for {company}: {str(e)}")
+        api_logger.error(f"Job matching processing error for {company}: {e!s}")
         raise HTTPException(status_code=500, detail="Job matching analysis failed")

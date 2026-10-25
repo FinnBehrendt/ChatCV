@@ -1,14 +1,15 @@
-from langchain_community.document_loaders import PyPDFLoader, TextLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_chroma import Chroma
-from langchain_core.documents import Document
-import re
+import logging
 import os
-from app.modules.model_provider import ModelProvider
+import re
+
+from langchain_chroma import Chroma
+from langchain_community.document_loaders import PyPDFLoader, TextLoader
+from langchain_core.documents import Document
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+
 from app.config import AppConfig
 from app.modules.guardrails import InputValidator
-import logging
-from typing import List, Optional
+from app.modules.model_provider import ModelProvider
 
 
 class VectorStoreManager:
@@ -17,7 +18,7 @@ class VectorStoreManager:
     def __init__(
         self,
         config: AppConfig,
-        model_provider: Optional[ModelProvider],
+        model_provider: ModelProvider | None,
         logger: logging.Logger,
     ) -> None:
         """
@@ -231,7 +232,7 @@ class DocumentHandler:
             metadata={"source": "text_input", "type": "job_description"},
         )
 
-    def load_documents(self) -> List[Document]:
+    def load_documents(self) -> list[Document]:
         """
         Load and prepare CV and About Me documents for summarization.
 

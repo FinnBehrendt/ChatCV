@@ -1,10 +1,10 @@
 import os
-import yaml
 from pathlib import Path
+from typing import Any
+
+import yaml
+from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
-from pydantic import Field
-from typing import Optional, Dict, Any
-from pydantic import BaseModel
 
 
 class LLMConfig(BaseModel):
@@ -100,8 +100,8 @@ class AppConfig(BaseSettings):
 
     environment: str = Field(default="development")
     debug: bool = False
-    openai_api_key: Optional[str] = Field(default=None, alias="OPENAI_API_KEY")
-    langsmith_api_key: Optional[str] = Field(default=None, alias="LANGSMITH_API_KEY")
+    openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
+    langsmith_api_key: str | None = Field(default=None, alias="LANGSMITH_API_KEY")
 
     llm: LLMConfig = LLMConfig()
     ollama: OllamaConfig = OllamaConfig()
@@ -112,10 +112,10 @@ class AppConfig(BaseSettings):
     logging: LoggingConfig = LoggingConfig()
     data: DataPaths = DataPaths()
     candidate: CandidateConfig = CandidateConfig()
-    invite_codes: Dict[str, Any] = {}
+    invite_codes: dict[str, Any] = {}
 
     # Environment variables for invite codes
-    invite_codes_env: Optional[str] = Field(default=None, alias="INVITE_CODES")
+    invite_codes_env: str | None = Field(default=None, alias="INVITE_CODES")
 
     # Chat fallback response for guardrails
     chat_fallback_response: str = (
@@ -146,7 +146,7 @@ class AppConfig(BaseSettings):
                 )
 
 
-def deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     """
     Recursively merge two dictionaries.
 

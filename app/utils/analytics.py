@@ -1,9 +1,10 @@
 import json
 import os
 from datetime import datetime
-from app.utils.logging_config import analytics_logger
+from typing import Any
+
 from app.config import config
-from typing import Dict, Any
+from app.utils.logging_config import analytics_logger
 
 # Optional LangSmith integration
 try:
@@ -29,7 +30,7 @@ class AdvancedAnalytics:
         self.langsmith_client = None
         self.mlflow_enabled = False
         self.analytics_file = self.config.data.analytics_log_path
-        self.active_chat_runs: Dict[str, Dict[str, Any]] = {}
+        self.active_chat_runs: dict[str, dict[str, Any]] = {}
 
         # Ensure analytics directory exists
         os.makedirs(os.path.dirname(self.analytics_file), exist_ok=True)
@@ -117,7 +118,7 @@ class AdvancedAnalytics:
 
             except Exception as e:
                 analytics_logger.error(
-                    f"LangSmith session start error ({e.__class__.__name__}): {str(e)}"
+                    f"LangSmith session start error ({e.__class__.__name__}): {e!s}"
                 )
         else:
             # Log session start even without LangSmith
@@ -270,7 +271,7 @@ class AdvancedAnalytics:
 
         except Exception as e:
             analytics_logger.error(
-                f"Error logging job matching analysis ({e.__class__.__name__}): {str(e)}"
+                f"Error logging job matching analysis ({e.__class__.__name__}): {e!s}"
             )
 
 
@@ -309,7 +310,7 @@ def log_chat_interaction(
 
     except Exception as e:
         analytics_logger.error(
-            f"Analytics logging error ({e.__class__.__name__}): {str(e)}"
+            f"Analytics logging error ({e.__class__.__name__}): {e!s}"
         )
 
 
@@ -344,7 +345,7 @@ def log_summary_request(
 
     except Exception as e:
         analytics_logger.error(
-            f"Analytics logging error ({e.__class__.__name__}): {str(e)}"
+            f"Analytics logging error ({e.__class__.__name__}): {e!s}"
         )
 
 
@@ -375,11 +376,11 @@ def log_login_event(user_code: str, company: str, success: bool) -> None:
 
     except Exception as e:
         analytics_logger.error(
-            f"Analytics logging error ({e.__class__.__name__}): {str(e)}"
+            f"Analytics logging error ({e.__class__.__name__}): {e!s}"
         )
 
 
-def get_analytics_summary() -> Dict[str, Any]:
+def get_analytics_summary() -> dict[str, Any]:
     """
     Generate a basic analytics summary from the log file.
 
@@ -431,6 +432,6 @@ def get_analytics_summary() -> Dict[str, Any]:
         return summary
     except Exception as e:
         analytics_logger.error(
-            f"Error generating analytics summary ({e.__class__.__name__}): {str(e)}"
+            f"Error generating analytics summary ({e.__class__.__name__}): {e!s}"
         )
         return {"error": str(e)}

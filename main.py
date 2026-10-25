@@ -7,13 +7,12 @@ conversational experiences using RAG (Retrieval-Augmented Generation).
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
-from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
-from typing import Dict
+from fastapi.templating import Jinja2Templates
 
 from app.api.routes import router as chat_router
-from app.utils.logging_config import main_logger
 from app.config import config
+from app.utils.logging_config import main_logger
 
 # Initialize logging
 logger = main_logger
@@ -60,7 +59,7 @@ async def index(request: Request) -> HTMLResponse:
 
 
 @app.get("/health")
-async def health_check() -> Dict[str, str]:
+async def health_check() -> dict[str, str]:
     """
     Health check endpoint for monitoring and load balancers.
 
