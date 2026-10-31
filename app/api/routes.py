@@ -38,12 +38,12 @@ async def login(
 
     if not session_token:
         log_login_event(invite_code, user_info.get("company", "Unknown"), False)
-        api_logger.warning(f"Login failed for invite code: {invite_code}")
+        api_logger.warning("Login failed: invalid invite code")
         raise HTTPException(status_code=401, detail="Invalid invite code")
 
     log_login_event(invite_code, user_info.get("company", "Unknown"), True)
     api_logger.info(
-        f"Successful login for company: {user_info.get('company', 'Unknown')}, invite code: {invite_code}"
+        "Successful login for company: %s", user_info.get("company", "Unknown")
     )
 
     # Start chat session in LangSmith
@@ -59,9 +59,7 @@ async def login(
     is_local = "localhost" in host or "127.0.0.1" in host
     secure_cookies = config.security.secure_cookies and not is_local
 
-    api_logger.debug(
-        f"Setting session cookie (secure={secure_cookies}, host={host}) for invite code: {invite_code}"
-    )
+    api_logger.debug("Setting session cookie (secure=%s)", secure_cookies)
 
     response.set_cookie(
         key="session_token",
@@ -91,7 +89,7 @@ async def logout(request: Request, response: Response):
         # End chat session in LangSmith
         advanced_analytics.end_chat_session(session_token)
         logout_user(session_token)
-        api_logger.info(f"User logged out with session token: {session_token}")
+        api_logger.info("User logged out")
     else:
         api_logger.info("Logout attempted with no active session token found.")
 
@@ -117,9 +115,7 @@ async def auth_status(request: Request):
     user_code = get_current_user(request)
     if user_code:
         user_info = get_user_info(user_code)
-        api_logger.debug(
-            f"Authentication status checked: user authenticated as {user_code}"
-        )
+        api_logger.debug("Authentication status checked: user authenticated")
         return {
             "authenticated": True,
             "auth_enabled": True,
@@ -145,11 +141,11 @@ async def chat(
     session_token = request.cookies.get("session_token")
 
     api_logger.info(
-        f"Received chat query from {company} (user_code: {user_code}), query length: {len(query)}"
+        "Received chat query from %s, query length: %d", company, len(query)
     )
 
     # Prepare user metadata for LangSmith
-    user_metadata = {"user_code": user_code, "company": company}
+    user_metadata = {"company": company}
 
     # Measure response time
     start_time = time.time()
@@ -204,12 +200,10 @@ async def summary(
     user_info = get_user_info(user_code)
     company = user_info.get("company", "Unknown")
 
-    api_logger.info(
-        f"Summary request received from {company} (user_code: {user_code}), style: {style}"
-    )
+    api_logger.info("Summary request received from %s, style: %s", company, style)
 
     # Prepare user metadata for LangSmith
-    user_metadata = {"user_code": user_code, "company": company}
+    user_metadata = {"company": company}
 
     result = get_auto_summary(style, user_metadata=user_metadata)
 
@@ -242,9 +236,7 @@ async def job_match_endpoint(request: Request, user_code: str = Depends(require_
     company = user_info.get("company", "Unknown")
     session_token = request.cookies.get("session_token")
 
-    api_logger.info(
-        f"Job matching request received from {company} (user_code: {user_code})"
-    )
+    api_logger.info("Job matching request received from %s", company)
 
     try:
         # Parse JSON data for text input only
@@ -255,7 +247,7 @@ async def job_match_endpoint(request: Request, user_code: str = Depends(require_
         job_description = process_job_description(text=str(text_input))
 
         # Prepare user metadata for LangSmith
-        user_metadata = {"user_code": user_code, "company": company}
+        user_metadata = {"company": company}
 
         # Measure response time
         start_time = time.time()
