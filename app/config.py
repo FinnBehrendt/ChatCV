@@ -75,7 +75,7 @@ class LoggingConfig(BaseModel):
 class DataPaths(BaseModel):
     """Configuration for various data file paths used by the application."""
 
-    cv_path: str = "/data/CV_Demo.pdf"
+    cv_path: str = "data/CV_Demo.pdf"
     about_me_path: str = "data/about_me.md"
     vector_db_path: str = "data/vector_db"
     analytics_log_path: str = "data/analytics.log"
