@@ -1,0 +1,45 @@
+# Add to the base file for a local chat model; embedding settings stay independent.
+services:
+  # Portable CPU baseline; downloaded models persist across container restarts.
+  ollama:
+    image: ${OLLAMA_IMAGE:-ollama/ollama:latest}
+    ports:
+      - "127.0.0.1:11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  ollama-init:
+    image: ${OLLAMA_IMAGE:-ollama/ollama:latest}
+    entrypoint: ["/bin/sh", "/usr/local/bin/prepare-models.sh"]
+    volumes:
+      - ./ollama/prepare-models.sh:/usr/local/bin/prepare-models.sh:ro
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      OLLAMA_CHAT_MODEL: ${OLLAMA_CHAT_MODEL:-llama3.2:1b}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-}
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: "no"
+
+  chatcv:
+    environment:
+      LLM_PROVIDER: openai_compatible
+      LLM_BASE_URL: http://ollama:11434/v1
+      LLM_MODEL: ${OLLAMA_CHAT_MODEL:-llama3.2:1b}
+      # Never forward a cloud chat key to the local model server.
+      LLM_API_KEY: ""
+      LLM_TIMEOUT: ${OLLAMA_TIMEOUT:-120}
+    depends_on:
+      ollama-init:
+        condition: service_completed_successfully
+
+volumes:
+  ollama_data:

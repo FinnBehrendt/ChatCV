@@ -1,26 +1,7 @@
 services:
-  ollama: # wip - for now ollama is required to run locally (ollama serve, ollama pull llama3.2).
-    image: custom-ollama:latest
-    build:
-      context: .
-      dockerfile: ollama/Dockerfile_ollama
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_data:/root/.ollama
-    environment:
-      - OLLAMA_MODELS=${OLLAMA_MODELS}
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - capabilities: [gpu]
-    runtime: nvidia
-    profiles:
-      - ollama
-
+  # Application only. Add docker-compose.ollama.yml to run a model server too.
   chatcv:
-    image: chatcv-app:latest-${ENVIRONMENT}
+    image: chatcv-app:latest-${ENVIRONMENT:-development}
     build:
       context: .
       dockerfile: Dockerfile
@@ -30,14 +11,22 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - LLM_PROVIDER=${LLM_PROVIDER}
-      - OLLAMA_ENDPOINT=${OLLAMA_ENDPOINT}
-      - ENVIRONMENT=${ENVIRONMENT}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      LLM_PROVIDER: ${LLM_PROVIDER:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_TEMPERATURE: ${LLM_TEMPERATURE:-}
+      LLM_TIMEOUT: ${LLM_TIMEOUT:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      OLLAMA_ENDPOINT: ${OLLAMA_ENDPOINT:-http://ollama:11434}
+      OLLAMA_TIMEOUT: ${OLLAMA_TIMEOUT:-}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+      EMBEDDING_TIMEOUT: ${EMBEDDING_TIMEOUT:-}
+      ENVIRONMENT: ${ENVIRONMENT:-development}
 
 secrets:
   guardrails_token:
     environment: GUARDRAILS_TOKEN
-
-volumes:
-  ollama_data:
