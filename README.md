@@ -146,6 +146,11 @@ GUARDRAILS_TOKEN="your_guardrails_token"   # Extra safety (slower build)
 - Edit `config/base.yml` if you want to change file paths or naming
 - replace `/static/default-avatar.png` with your profile picture
 
+Set `data.cv_path` in `config/base.yml` to your PDF's filesystem path, for example
+`data/my_cv.pdf`. The configured CV is publicly downloadable at `/resume` through
+the **Download CV** link, including when invite-code authentication is enabled.
+When using Docker, rebuild the image after replacing the PDF.
+
 ### 4. Start the App
 ```bash
 docker compose up --build

@@ -5,8 +5,10 @@ A FastAPI application that transforms static resumes into intelligent,
 conversational experiences using RAG (Retrieval-Augmented Generation).
 """
 
-from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse
+from pathlib import Path
+
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -29,7 +31,6 @@ logger.info("ChatCV application starting up")
 
 app.include_router(chat_router)
 app.mount("/static", StaticFiles(directory="static"), name="static")
-app.mount("/data", StaticFiles(directory="data"), name="data")
 templates = Jinja2Templates(directory="templates")
 
 
@@ -53,9 +54,18 @@ async def index(request: Request) -> HTMLResponse:
             "candidate_email": config.candidate.email,
             "candidate_linkedin": config.candidate.linkedin,
             "candidate_github": config.candidate.github,
-            "cv_path": config.data.cv_path,
+            "cv_path": "/resume",
         },
     )
+
+
+@app.get("/resume", response_class=FileResponse)
+def download_resume() -> FileResponse:
+    """Publicly serve only the configured resume, never a user-selected path."""
+    resume = Path(config.data.cv_path)
+    if not resume.is_file():
+        raise HTTPException(status_code=404, detail="Resume not found")
+    return FileResponse(resume, media_type="application/pdf", filename="CV.pdf")
 
 
 @app.get("/health")
