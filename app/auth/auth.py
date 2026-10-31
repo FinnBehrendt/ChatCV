@@ -27,7 +27,7 @@ def generate_session_token() -> str:
         str: A URL-safe, 32-byte random session token.
     """
     token = secrets.token_urlsafe(32)
-    auth_logger.debug(f"Generated new session token: {token}")
+    auth_logger.debug("Generated new session token.")
     return token
 
 
@@ -57,11 +57,9 @@ def authenticate_with_code(code: str) -> str | None:
     if validate_invite_code(code):
         session_token = generate_session_token()
         active_sessions[session_token] = code
-        auth_logger.info(f"Successful authentication for invite code: {code}")
+        auth_logger.info("Successful authentication for invite code")
         return session_token
-    auth_logger.warning(
-        f"Failed authentication attempt with invalid invite code: {code}"
-    )
+    auth_logger.warning("Failed authentication attempt with invalid invite code")
     return None
 
 
@@ -76,12 +74,9 @@ def get_current_user(request: Request) -> str | None:
         Optional[str]: The invite code associated with the current session, or None if no valid session exists.
     """
     session_token = request.cookies.get("session_token")
-    auth_logger.debug(f"Session token from cookie: {session_token}")
-    auth_logger.debug(f"Active sessions: {list(active_sessions.keys())}")
-
     if session_token and session_token in active_sessions:
         user_code = active_sessions[session_token]
-        auth_logger.debug(f"Valid session found for user: {user_code}")
+        auth_logger.debug("Valid session found for request")
         return user_code
     auth_logger.debug("No valid session found in request")
     return None
@@ -144,9 +139,8 @@ def logout_user(session_token: str) -> bool:
         bool: True if logout was successful, False if the session token was invalid.
     """
     if session_token in active_sessions:
-        user_code = active_sessions[session_token]
         del active_sessions[session_token]
-        auth_logger.info(f"User {user_code} logged out successfully")
+        auth_logger.info("User logged out successfully")
         return True
     auth_logger.warning("Logout attempt with invalid session token")
     return False

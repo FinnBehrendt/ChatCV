@@ -19,6 +19,12 @@ except ImportError:
 
 
 class AdvancedAnalytics:
+    """Keep authentication credentials out of analytics files and remote tracking.
+
+    Existing ``user_code`` parameters are retained for caller compatibility but
+    never recorded. Session tokens are used only for in-memory run lookup.
+    """
+
     def __init__(self) -> None:
         """
         Initialize the AdvancedAnalytics instance.
@@ -76,9 +82,7 @@ class AdvancedAnalytics:
         This method initializes a new run in LangSmith tracking if the client is available
         and the session is not already active.
         """
-        analytics_logger.info(
-            f"Starting chat session for company: {company}, user: {user_code}"
-        )
+        analytics_logger.info("Starting chat session for company: %s", company)
 
         if (
             self.langsmith_client
@@ -95,10 +99,9 @@ class AdvancedAnalytics:
                     id=run_id,
                     name="ChatCV-Conversation",
                     run_type="chain",
-                    inputs={"user": company, "user_code": user_code},
+                    inputs={"user": company},
                     project_name=os.getenv("LANGSMITH_PROJECT", "ChatCV"),
                     extra={
-                        "user_code": user_code,
                         "company": company,
                         "session_start": datetime.now(UTC).isoformat(),
                         "session_type": "conversation",
@@ -133,7 +136,6 @@ class AdvancedAnalytics:
                 "query_count": 0,
                 "conversation": [],
                 "company": company,
-                "user_code": user_code,
             }
 
     def end_chat_session(self, session_token: str) -> None:
@@ -255,14 +257,17 @@ class AdvancedAnalytics:
         try:
             # Prepare log data dictionary
             log_data = {
-                "timestamp": datetime.now().isoformat(),
-                "user_code": user_code,
+                "timestamp": datetime.now(UTC).isoformat(),
                 "company": company,
                 "job_source": job_source,
                 "response_time": response_time,
                 "analysis_length": len(analysis_text),
-                "session_token": session_token,
-                "metadata": metadata or {},
+                # Export only the known operational fields, not arbitrary metadata.
+                "metadata": {
+                    key: value
+                    for key, value in (metadata or {}).items()
+                    if key in {"llm_model", "pipeline"}
+                },
             }
 
             # Append log entry to analytics file
@@ -290,7 +295,6 @@ def log_chat_interaction(
         log_entry = {
             "timestamp": datetime.now(UTC).isoformat(),
             "type": "chat",
-            "user_code": user_code,
             "company": company,
             "query": query[:200],  # Limit query length for privacy
             "response": response[:500],  # Limit response length
@@ -326,7 +330,6 @@ def log_summary_request(
         log_entry = {
             "timestamp": datetime.now(UTC).isoformat(),
             "type": "summary",
-            "user_code": user_code,
             "company": company,
             "style": style,
             "summary_length": summary_length,
@@ -356,7 +359,6 @@ def log_login_event(user_code: str, company: str, success: bool) -> None:
         log_entry = {
             "timestamp": datetime.now(UTC).isoformat(),
             "type": "login",
-            "user_code": user_code,
             "company": company,
             "success": success,
         }
