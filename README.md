@@ -144,7 +144,7 @@ GUARDRAILS_TOKEN="your_guardrails_token"   # Extra safety (slower build)
 
 For a local model server, change the corresponding base URL and model instead.
 Clear that role's API key if the local server does not require authentication.
-See [Ollama via the shared API](#ollama-via-the-shared-api) for the Docker setup.
+See [Model endpoints](#model-endpoints) for short Ollama and vLLM examples.
 `OPENAI_API_KEY` alone does not authenticate the compatible provider.
 Keep comments on a separate line for empty values: use `LLM_API_KEY=`, not
 `LLM_API_KEY= # comment`. Compose can interpret that comment as the actual key.
@@ -164,7 +164,7 @@ When using Docker, rebuild the image after replacing the PDF.
 
 ### 4. Start the App
 ```bash
-docker compose up --build
+docker compose up --build -d
 ```
 Or build and run the image directly, without Compose:
 
@@ -201,189 +201,70 @@ For development without Docker, use `pixi run dev` as described above.
 ### 5. Try It Out
 Head to `http://localhost:8000` and start chatting with your resume!
 
-## Model providers: local servers and APIs
+## Model endpoints
 
-Use **`openai_compatible` as the preferred integration** for Ollama, vLLM and
-compatible hosted APIs, including OpenAI itself. The server runs independently;
-ChatCV selects it through its URL, model name and endpoint-specific key.
-
-Choose chat and embeddings **independently**. Model names are sent unchanged to
-the selected endpoint. Existing `openai` and native `ollama` configurations remain
-supported; they are not required for the shared text-chat/embedding API contract.
-
-| Provider | Chat | Embeddings | Endpoint |
-| --- | --- | --- | --- |
-| `openai_compatible` | Chat Completions API | Text-input embeddings API | Separate `LLM_BASE_URL` / `EMBEDDING_BASE_URL` |
-| `openai` (existing adapter) | OpenAI chat client | OpenAI embeddings client | Official OpenAI API |
-| `ollama` (existing adapter) | Native Ollama chat | Native Ollama embeddings | `OLLAMA_ENDPOINT` |
-
-The compatible provider is the common integration point for local servers such
-as [vLLM](https://docs.vllm.ai/en/latest/serving/online_serving/openai_compatible_server/) and
-hosted APIs implementing these endpoints. It does not launch or provision those
-servers. There is no backend-specific code in the retrieval pipelines.
-
-### OpenAI-compatible chat
-
-For example, with a separately running local server:
+The default `.env.example` connects to OpenAI's hosted API. To use Ollama, vLLM
+or another OpenAI-compatible API instead, run that server separately and edit
+these fields in `.env`:
 
 ```dotenv
 LLM_PROVIDER=openai_compatible
-LLM_BASE_URL=http://localhost:8001/v1
+LLM_BASE_URL=http://YOUR_SERVER:8001/v1
 LLM_MODEL=your-served-model-name
 LLM_API_KEY=
-LLM_TEMPERATURE=0.1
-LLM_TIMEOUT=120
-EMBEDDING_PROVIDER=openai_compatible
-EMBEDDING_BASE_URL=https://api.openai.com/v1
-EMBEDDING_MODEL=text-embedding-3-small
-EMBEDDING_API_KEY=your-openai-key
 ```
 
-This endpoint is for a **local Pixi process**. From a Compose container use the
-server's service name, or `host.docker.internal` for a host server on Docker
-Desktop. Inside a container, `localhost` refers to that container, not your host.
-Use the API root including its prefix (typically `/v1`), not `/chat/completions`.
-For a hosted API, replace the URL and set `LLM_API_KEY` to that service's key.
-Use HTTPS for remote services. Keep `.env` out of version control.
-When switching endpoints, update or clear the corresponding API key too: an
-explicitly configured key is sent to that role's endpoint.
+For **Ollama**, install it and run `ollama serve` if it is not already running.
+In another terminal, download a model with `ollama pull qwen2.5:0.5b`. Use
+`LLM_MODEL=qwen2.5:0.5b` and its API at port **11434**, including `/v1`.
 
-An unauthenticated local endpoint receives a harmless `not-required` bearer token
-because the SDK requires a key. Compatible endpoints **never inherit
-`OPENAI_API_KEY`**. Chat and embeddings each have their own optional key; for the
-official `openai` provider only, these override the shared `OPENAI_API_KEY`.
-
-For compatible embeddings, configure the other role separately:
-
-```dotenv
-EMBEDDING_PROVIDER=openai_compatible
-EMBEDDING_BASE_URL=http://localhost:8002/v1
-EMBEDDING_MODEL=your-served-embedding-model
-EMBEDDING_API_KEY=
-EMBEDDING_TIMEOUT=60
-```
-
-This sends text to `/embeddings`, not OpenAI-specific token IDs. Keep document
-chunks within the selected model's input limit; no provider-specific tokenizer
-is assumed. Switching embedding models requires a fresh vector index (see below).
-
-### Compatibility boundaries
-
-The shared contract is text chat through `/chat/completions` and embeddings
-through `/embeddings`. A server must implement the endpoint for the selected
-role. Unknown providers and missing compatible base URLs fail explicitly; there
-is no automatic switch to another service. API errors propagate to the existing
-application error handling instead of silently changing providers.
-
-Set `LLM_TEMPERATURE=null` to omit temperature when a model rejects that option.
-Provider-specific features such as Responses API, extended thinking, custom
-headers, special tool schemas or multimodal inputs are not part of this shared
-contract. Azure-specific authentication and API-version handling are not a native
-adapter here; a deployment must expose the compatible contract to use this path.
-
-Anthropic offers an [OpenAI SDK compatibility layer](https://platform.claude.com/docs/en/cli-sdks-libraries/libraries/openai-sdk).
-For basic text chat it can use `LLM_PROVIDER=openai_compatible`,
-`LLM_BASE_URL=https://api.anthropic.com/v1`, a supported Claude model name,
-`LLM_API_KEY` containing a Claude key and `LLM_TEMPERATURE=null`. Use a
-workspace-scoped key: keys requiring the additional `anthropic-workspace-id`
-header need an adapter not provided here. This is **not a native Anthropic
-integration**; compatibility-layer restrictions still apply, including differences
-in system messages and unsupported features. Embeddings remain a separate service.
-
-Automated tests exercise real SDK request/response handling with an in-memory
-HTTP transport, without cloud credentials or model downloads. The compatible
-protocol is not a claim that every model or vendor-specific feature has been
-tested against each live server.
-
-## Ollama via the shared API
-
-The base `docker-compose.yml` starts only ChatCV and connects to the endpoint
-configured in `.env`. The optional `docker-compose.ollama.yml` adds the entire
-local model stack: Ollama, model preparation, model storage and the app's local
-connection settings. No Compose profiles are needed.
-
-ChatCV and Ollama run independently. To start the app, server and model preparation
-with one command, use the local Compose override:
+For **vLLM**, install it in a suitable separate environment and start a server:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.ollama.yml up --build -d
+vllm serve Qwen/Qwen2.5-0.5B-Instruct --served-model-name chatcv-model --port 8001 --host 127.0.0.1
 ```
 
-This selects `openai_compatible`, sets the internal Ollama URL, clears the cloud
-chat key and uses `OLLAMA_CHAT_MODEL` (default `llama3.2:1b`). You do not need to
-replace the cloud chat settings in `.env` to use this local override.
+Use `LLM_MODEL=chatcv-model`. These small models are setup examples, not answer-
+quality recommendations. ChatCV does not install, start or stop either server.
 
-Startup order is **healthy Ollama server -> model preparation -> ChatCV**.
-Preparation reuses an installed model; otherwise it downloads it. A failed model
-download prevents dependent startup. The first download requires internet and
-disk space. Set `OLLAMA_CHAT_MODEL` to choose another model; changing `LLM_MODEL`
-alone does not change the override's chat model. Embedding settings remain as
-configured in `.env` and are not automatically changed to a local model.
+Choose the host from **ChatCV's** perspective:
 
-For the default OpenAI embeddings, set a valid `EMBEDDING_API_KEY` in `.env`.
-Document chunks and search queries still go to that service. A local chat model
-alone does not make the app offline.
-
-Check setup progress (with the same Compose files):
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.ollama.yml logs -f ollama ollama-init
-```
-
-Use the same Compose files when updating or stopping this local stack. To return
-to your cloud chat configuration without deleting models or the vector index:
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.ollama.yml stop chatcv ollama-init ollama
-docker compose up -d --force-recreate chatcv
-```
-
-For a separately managed model server, use the base file only and configure its
-reachable URL in `.env` as shown in the provider examples above.
-
-The `ollama_data` volume keeps downloaded models between restarts. Its name and
-mount path are unchanged, so an existing Compose model volume is reused.
-The API port is published only on the host's loopback interface. Do not expose
-the model server directly to the public internet.
-
-Use the API base URL appropriate to where **ChatCV** runs. Set `LLM_BASE_URL`
-for chat and, if using Ollama embeddings too, `EMBEDDING_BASE_URL`:
-
-| ChatCV | Ollama | Compatible API base URL |
+| ChatCV location | Model server location | Host to configure |
 | --- | --- | --- |
-| Compose container | Compose service | `http://ollama:11434/v1` |
-| Local Pixi process | Local server or published Docker service | `http://localhost:11434/v1` |
-| Docker Desktop container | Native host server | `http://host.docker.internal:11434/v1` |
+| Local Pixi process | Same machine | `localhost` |
+| Docker Desktop container | Native host server | `host.docker.internal` |
+| Container/server | Another reachable machine or shared container network | Its reachable hostname/IP |
 
-The local Compose stack is a portable CPU baseline, not a GPU configuration.
-For Apple GPU acceleration run Ollama natively; Docker Desktop on macOS does not
-provide that GPU access. Linux GPU deployments need a suitable GPU runtime.
-See the [official Ollama Docker guide](https://docs.ollama.com/docker) and
-[GPU FAQ](https://docs.ollama.com/faq#how-do-i-use-ollama-with-gpu-acceleration-in-docker).
-The server image can be pinned with `OLLAMA_IMAGE`; use a fixed version or digest
-for reproducible deployments and benchmarks.
+`localhost` inside a container is not your host machine. Ensure the server listens
+on an interface reachable from the app; do not expose an unauthenticated model
+API publicly. Set the endpoint's own `LLM_API_KEY` if required, or clear it for
+an unauthenticated local server. Compatible endpoints never inherit `OPENAI_API_KEY`.
 
-### Optional local embeddings
+Embeddings stay independent (`EMBEDDING_PROVIDER`, `EMBEDDING_BASE_URL`,
+`EMBEDDING_MODEL`, `EMBEDDING_API_KEY`). Local chat alone does not make the app
+offline. Restart/recreate ChatCV after editing `.env`.
 
-To use Ollama for embeddings as well, set:
+CPU/GPU choices, Docker and native Mac options belong to the optional
+[model-server tutorial](docs/tutorials/model-servers.md). The client contract is
+text Chat Completions and text-input embeddings; see
+[endpoint details](docs/model-endpoints.md) for compatibility limits.
 
-```dotenv
-EMBEDDING_PROVIDER=openai_compatible
-EMBEDDING_BASE_URL=http://ollama:11434/v1
-EMBEDDING_MODEL=nomic-embed-text
-EMBEDDING_API_KEY=
+## Starting ChatCV
+
+Start Docker, then run Compose from the repository root. It automatically reads
+`docker-compose.yml` and `.env`; Pixi is not required on the host:
+
+```bash
+docker compose up --build -d
+docker compose ps -a
+docker compose logs --tail 100 --follow chatcv
+docker compose stop
 ```
 
-With the local Compose override, preparation also downloads a missing embedding
-model when `EMBEDDING_PROVIDER=openai_compatible` and `EMBEDDING_BASE_URL` is
-`http://ollama:11434/v1` (an optional trailing slash is accepted). For a separately
-managed server, use its CLI to download the embedding model.
-
-When changing embedding models, configure a **new** `data.vector_db_path` in
-`config/base.yml` so ChatCV creates a fresh index. Existing embeddings cannot be
-reused with another embedding model, even if the vector dimensions match. Keep
-the old index until you have verified the new one; no automatic deletion occurs.
-Chat and embedding providers can be selected independently.
+Compose manages only ChatCV, not model servers or their hardware configuration.
+The project name remains `chatcv` for existing deployments. `stop` does not remove
+containers or volumes. Use `docker compose config --quiet` to validate the
+configuration without printing secrets.
 
 ## Model configuration
 
@@ -419,7 +300,7 @@ Inspect the application without changing its files:
 
 ```bash
 docker compose ps -a
-docker compose logs -f --tail=100 chatcv
+docker compose logs --tail 100 chatcv
 docker compose exec chatcv sh
 ```
 
@@ -429,15 +310,13 @@ Do not share full `env`, `printenv`, `docker inspect` or resolved Compose output
 they can contain API keys. Do not install debugging packages into the runtime;
 prefer its existing Python interpreter or debug locally with Pixi.
 
-After editing environment variables, recreate the app with the same Compose files
-you used to start it. `docker compose restart` does not reload `.env`.
+After editing environment variables, run `docker compose up -d` to recreate the
+app with its updated configuration. A container restart alone does not reload `.env`.
 An HTTP 401 from a model API indicates an authentication/configuration problem;
 check the correct role key and ensure it is not an inline comment. Reaching
 `/health` only verifies the web process, not a successful model request.
 
-For the local Ollama stack, use both Compose files with the logs command above
-and check the endpoint table. If a model is missing, inspect the `ollama-init`
-logs; preparation must finish successfully before the app starts.
+`docker compose logs` shows app logs only. Inspect model-server logs separately when needed.
 Increasing the timeout may help with cold model loads, but does not fix an
 incorrect endpoint or a missing model.
 

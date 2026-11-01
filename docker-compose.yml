@@ -1,5 +1,7 @@
+name: chatcv
+
 services:
-  # Application only. Add docker-compose.ollama.yml to run a model server too.
+  # Application only; model servers are managed separately.
   chatcv:
     image: chatcv-app:latest-${ENVIRONMENT:-development}
     build:
@@ -18,7 +20,7 @@ services:
       LLM_TIMEOUT: ${LLM_TIMEOUT:-}
       LLM_BASE_URL: ${LLM_BASE_URL:-}
       LLM_API_KEY: ${LLM_API_KEY:-}
-      OLLAMA_ENDPOINT: ${OLLAMA_ENDPOINT:-http://ollama:11434}
+      OLLAMA_ENDPOINT: ${OLLAMA_ENDPOINT:-}
       OLLAMA_TIMEOUT: ${OLLAMA_TIMEOUT:-}
       EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
