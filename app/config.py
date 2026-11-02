@@ -3,7 +3,8 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field
+from dotenv import dotenv_values
+from pydantic import BaseModel, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -12,8 +13,16 @@ class LLMConfig(BaseModel):
 
     provider: str = "openai"
     model: str = "gpt-4o-mini"
-    temperature: float = 0.1
-    timeout: int = 60
+    temperature: float | None = 0.1
+    timeout: int = Field(default=60, gt=0)
+    base_url: str | None = None
+
+    @field_validator("temperature", mode="before")
+    @classmethod
+    def allow_omitted_temperature(cls, value: object) -> object:
+        if isinstance(value, str) and value.strip().lower() in {"null", "none"}:
+            return None
+        return value
 
 
 class OllamaConfig(BaseModel):
@@ -21,7 +30,7 @@ class OllamaConfig(BaseModel):
 
     endpoint: str = "http://localhost:11434"
     models: str = "llama3.2"
-    timeout: int = 120
+    timeout: int = Field(default=120, gt=0)
 
 
 class EmbeddingConfig(BaseModel):
@@ -29,6 +38,8 @@ class EmbeddingConfig(BaseModel):
 
     provider: str = "openai"
     model: str = "text-embedding-3-small"
+    base_url: str | None = None
+    timeout: int = Field(default=60, gt=0)
     chunk_size: int = 1000
     chunk_overlap: int = 200
 
@@ -100,7 +111,13 @@ class AppConfig(BaseSettings):
 
     environment: str = Field(default="development")
     debug: bool = False
-    openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
+    openai_api_key: SecretStr | None = Field(
+        default=None, alias="OPENAI_API_KEY", repr=False
+    )
+    llm_api_key: SecretStr | None = Field(default=None, alias="LLM_API_KEY", repr=False)
+    embedding_api_key: SecretStr | None = Field(
+        default=None, alias="EMBEDDING_API_KEY", repr=False
+    )
     langsmith_api_key: str | None = Field(default=None, alias="LANGSMITH_API_KEY")
 
     llm: LLMConfig = LLMConfig()
@@ -194,9 +211,29 @@ def load_config() -> AppConfig:
             override_data = yaml.safe_load(f) or {}
             merged_data = deep_merge(merged_data, override_data)
 
-    # Load .env + YAML merged settings
+    # Flat model variables documented in .env.example must override nested YAML.
+    # Reading .env does not export credentials into the process environment.
+    model_environment = {**dotenv_values(".env"), **os.environ}
+    model_fields = {
+        "LLM_PROVIDER": ("llm", "provider"),
+        "LLM_MODEL": ("llm", "model"),
+        "LLM_TEMPERATURE": ("llm", "temperature"),
+        "LLM_TIMEOUT": ("llm", "timeout"),
+        "LLM_BASE_URL": ("llm", "base_url"),
+        "OLLAMA_ENDPOINT": ("ollama", "endpoint"),
+        "OLLAMA_TIMEOUT": ("ollama", "timeout"),
+        "EMBEDDING_PROVIDER": ("embedding", "provider"),
+        "EMBEDDING_MODEL": ("embedding", "model"),
+        "EMBEDDING_BASE_URL": ("embedding", "base_url"),
+        "EMBEDDING_TIMEOUT": ("embedding", "timeout"),
+    }
+    for variable, (section, field) in model_fields.items():
+        value = model_environment.get(variable)
+        if value is not None and value.strip():
+            merged_data.setdefault(section, {})[field] = value.strip()
+
+    # Pydantic validates the resulting settings, including numeric values.
     return AppConfig(**merged_data)
 
 
 config = load_config()
-print(config.llm.provider)
