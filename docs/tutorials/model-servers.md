@@ -20,18 +20,9 @@ In another terminal, prepare a small example model:
 ollama pull qwen2.5:0.5b
 ```
 
-For ChatCV running locally with Pixi, configure `.env`:
-
-```dotenv
-LLM_PROVIDER=openai_compatible
-LLM_BASE_URL=http://localhost:11434/v1
-LLM_MODEL=qwen2.5:0.5b
-LLM_API_KEY=
-```
-
-For ChatCV inside Docker Desktop, use `host.docker.internal` instead of localhost.
-Make sure host networking permits that connection; do not automatically expose
-an unauthenticated server on all interfaces to fix reachability.
+Choose the [compatible or native Ollama example](../model-endpoints.md#copyable-configurations).
+Docker Desktop uses `host.docker.internal`; local Pixi uses `localhost`.
+Ensure reachability without exposing an unauthenticated API publicly.
 
 Ollama also provides an [official Docker image](https://docs.ollama.com/docker).
 Its guide distinguishes CPU-only, NVIDIA and AMD setups. On an Apple Silicon
@@ -87,7 +78,8 @@ Configure ChatCV with the API URL and model that your runner actually advertises
 ## 4. Connect and verify
 
 1. Start the chosen server and confirm its model is available through its API.
-2. Set `LLM_BASE_URL`, `LLM_MODEL` and that endpoint's own `LLM_API_KEY` in `.env`.
+2. Select a [chat configuration](../model-endpoints.md#copyable-configurations):
+   compatible clients use `LLM_BASE_URL`; native Ollama uses `OLLAMA_ENDPOINT`.
 3. Keep embedding settings independent; local chat does not mean fully offline.
 4. Start/recreate only ChatCV with `docker compose up --build -d` from the
    repository root (or use `pixi run dev` without Docker).

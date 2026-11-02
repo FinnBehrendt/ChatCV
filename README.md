@@ -203,20 +203,23 @@ Head to `http://localhost:8000` and start chatting with your resume!
 
 ## Model endpoints
 
-The default `.env.example` connects to OpenAI's hosted API. To use Ollama, vLLM
-or another OpenAI-compatible API instead, run that server separately and edit
-these fields in `.env`:
+The default `.env.example` uses OpenAI's hosted API. For local servers, select
+one case below. `HOST` means `host.docker.internal` for ChatCV in Docker Desktop,
+or `localhost` for local Pixi. Replace it before starting.
 
-```dotenv
-LLM_PROVIDER=openai_compatible
-LLM_BASE_URL=http://YOUR_SERVER:8001/v1
-LLM_MODEL=your-served-model-name
-LLM_API_KEY=
-```
+| Case | `LLM_PROVIDER` | URL setting | Model / timeout |
+| --- | --- | --- | --- |
+| Ollama compatible | `openai_compatible` | `LLM_BASE_URL=http://HOST:11434/v1` | `LLM_MODEL=qwen2.5:0.5b`, `LLM_TIMEOUT=120` |
+| Ollama native | `ollama` | `OLLAMA_ENDPOINT=http://HOST:11434` | `LLM_MODEL=qwen2.5:0.5b`, `OLLAMA_TIMEOUT=120` |
+| vLLM compatible | `openai_compatible` | `LLM_BASE_URL=http://HOST:8001/v1` | `LLM_MODEL=chatcv-model`, `LLM_TIMEOUT=120` |
+
+Native Ollama **ignores `LLM_BASE_URL`, `LLM_API_KEY` and `LLM_TIMEOUT`**.
+Compatible APIs use `/v1` (API version), not `/api/chat`; the client adds the
+request path. Clear `LLM_API_KEY` for keyless local servers; otherwise set that
+endpoint's own key. Compatible clients never inherit `OPENAI_API_KEY`.
 
 For **Ollama**, install it and run `ollama serve` if it is not already running.
-In another terminal, download a model with `ollama pull qwen2.5:0.5b`. Use
-`LLM_MODEL=qwen2.5:0.5b` and its API at port **11434**, including `/v1`.
+In another terminal, download a model with `ollama pull qwen2.5:0.5b`.
 
 For **vLLM**, install it in a suitable separate environment and start a server:
 
@@ -224,25 +227,15 @@ For **vLLM**, install it in a suitable separate environment and start a server:
 vllm serve Qwen/Qwen2.5-0.5B-Instruct --served-model-name chatcv-model --port 8001 --host 127.0.0.1
 ```
 
-Use `LLM_MODEL=chatcv-model`. These small models are setup examples, not answer-
-quality recommendations. ChatCV does not install, start or stop either server.
-
-Choose the host from **ChatCV's** perspective:
-
-| ChatCV location | Model server location | Host to configure |
-| --- | --- | --- |
-| Local Pixi process | Same machine | `localhost` |
-| Docker Desktop container | Native host server | `host.docker.internal` |
-| Container/server | Another reachable machine or shared container network | Its reachable hostname/IP |
-
-`localhost` inside a container is not your host machine. Ensure the server listens
-on an interface reachable from the app; do not expose an unauthenticated model
-API publicly. Set the endpoint's own `LLM_API_KEY` if required, or clear it for
-an unauthenticated local server. Compatible endpoints never inherit `OPENAI_API_KEY`.
+These small models are setup examples, not quality recommendations. ChatCV starts
+neither server. Compose has no `ollama` service: `http://ollama:11434` will not
+resolve, and Ollama logs are in its own terminal, not `docker compose logs ollama`.
+For remote servers use a reachable, protected hostname/interface. Never expose
+an unauthenticated model API publicly.
 
 Embeddings stay independent (`EMBEDDING_PROVIDER`, `EMBEDDING_BASE_URL`,
 `EMBEDDING_MODEL`, `EMBEDDING_API_KEY`). Local chat alone does not make the app
-offline. Restart/recreate ChatCV after editing `.env`.
+offline. Apply `.env` changes with `docker compose up -d`, not `restart`.
 
 CPU/GPU choices, Docker and native Mac options belong to the optional
 [model-server tutorial](docs/tutorials/model-servers.md). The client contract is
@@ -270,9 +263,8 @@ configuration without printing secrets.
 
 ### Existing adapter configurations
 
-Existing installations may continue to use `LLM_PROVIDER=ollama` or
-`EMBEDDING_PROVIDER=ollama` with `OLLAMA_ENDPOINT=http://ollama:11434` (no `/v1`)
-and `OLLAMA_TIMEOUT`. These settings apply only to the native adapter.
+`LLM_PROVIDER=ollama` or `EMBEDDING_PROVIDER=ollama` uses `OLLAMA_ENDPOINT`
+(no `/v1`) and `OLLAMA_TIMEOUT`. Neither uses the compatible URL settings.
 
 Likewise, `openai` keeps the official endpoint and can use the shared
 `OPENAI_API_KEY`. Role-specific keys override that shared key for this adapter.

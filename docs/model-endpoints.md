@@ -11,25 +11,20 @@ independently; their endpoints can be hosted APIs or separately managed servers.
 
 `.env.example` uses the compatible client with OpenAI's hosted endpoints. Models
 are sent unchanged to the selected server; use its advertised model name or alias.
-The API root normally ends in `/v1`, not `/chat/completions` or `/embeddings`.
+Compatible roots end in `/v1` (API version); the client adds `/chat/completions`
+or `/embeddings`. Native Ollama uses its own `/api/...` routes without `/v1`.
 
-## Example configurations: OpenAI, Ollama and vLLM
+## Copyable configurations
 
-Copy `.env.example` to `.env`, then replace its model settings with one of the
-examples below. All three use `openai_compatible`: the server changes, not the
-application's client interface. The provider names `openai` and `ollama` in the
-table above are separate, existing adapters, not required for these examples.
+Copy `.env.example` to `.env`. Choose **one chat block**, keeping embeddings
+separate. Local examples assume ChatCV in Docker Desktop and a native host server.
+For local Pixi replace `host.docker.internal` with `localhost`; for remote servers
+use their reachable, protected hostname/interface.
 
-The local URLs below assume ChatCV runs with `pixi run dev` on the same machine
-as the model server. For ChatCV in Docker Desktop, replace `localhost` with
-`host.docker.internal`. On other deployments use a protected hostname/interface
-reachable from the app container. A loopback-only server may need its networking
-adjusted; do not publish an unauthenticated API to the internet.
+### Default: OpenAI-compatible hosted chat
 
-### 1. OpenAI: hosted chat and embeddings
-
-Set both role keys, even if they contain the same OpenAI API key. With the
-compatible adapter, setting only `OPENAI_API_KEY` is not sufficient.
+The default endpoint is OpenAI. Its compatible client needs `LLM_API_KEY`, not
+just `OPENAI_API_KEY`.
 
 ```dotenv
 LLM_PROVIDER=openai_compatible
@@ -38,44 +33,40 @@ LLM_MODEL=gpt-4o-mini
 LLM_API_KEY=your-openai-api-key
 LLM_TEMPERATURE=0.1
 LLM_TIMEOUT=60
-
-EMBEDDING_PROVIDER=openai_compatible
-EMBEDDING_BASE_URL=https://api.openai.com/v1
-EMBEDDING_MODEL=text-embedding-3-small
-EMBEDDING_API_KEY=your-openai-api-key
-EMBEDDING_TIMEOUT=60
 ```
 
-Both chat context and text submitted for embedding leave your machine. API usage
-may incur charges; do not commit `.env`.
+Chat context leaves your machine; API usage may incur charges.
 
-### 2. Ollama: local chat, hosted embeddings
+### Case 1: Ollama through the compatible API
 
-Start Ollama separately and prepare the chat model with
-`ollama pull qwen2.5:0.5b`. Its compatible API uses port 11434 and the `/v1` root.
+Start `ollama serve` if needed, then `ollama pull qwen2.5:0.5b` in another terminal.
+Both Ollama cases use this same server and model; only the client adapter changes.
 
 ```dotenv
 LLM_PROVIDER=openai_compatible
-LLM_BASE_URL=http://localhost:11434/v1
+LLM_BASE_URL=http://host.docker.internal:11434/v1
 LLM_MODEL=qwen2.5:0.5b
 LLM_API_KEY=
 LLM_TEMPERATURE=0.1
 LLM_TIMEOUT=120
-
-EMBEDDING_PROVIDER=openai_compatible
-EMBEDDING_BASE_URL=https://api.openai.com/v1
-EMBEDDING_MODEL=text-embedding-3-small
-EMBEDDING_API_KEY=your-openai-api-key
-EMBEDDING_TIMEOUT=60
 ```
 
-This assumes a local Ollama server without API authentication; clear any previous
-chat key. Chat runs locally, but document chunks and search queries still go to
-OpenAI for embeddings. For fully local operation, configure a separate local
-embedding model/endpoint as described under [Independent embeddings](#independent-embeddings).
-The Qwen chat model is not an embedding model.
+Clear any previous cloud chat key for this keyless local endpoint.
 
-### 3. vLLM: separately hosted chat, OpenAI embeddings
+### Case 2: Ollama through the native adapter
+
+```dotenv
+LLM_PROVIDER=ollama
+LLM_MODEL=qwen2.5:0.5b
+LLM_TEMPERATURE=0.1
+OLLAMA_ENDPOINT=http://host.docker.internal:11434
+OLLAMA_TIMEOUT=120
+```
+
+**No `/v1`.** Native Ollama ignores `LLM_BASE_URL`, `LLM_API_KEY` and
+`LLM_TIMEOUT`: changing those will not change its server or timeout.
+
+### Case 3: vLLM through the compatible API
 
 In a hardware-compatible, separate vLLM environment, start:
 
@@ -87,12 +78,22 @@ Use the advertised alias `chatcv-model`, not the Hugging Face path, in ChatCV:
 
 ```dotenv
 LLM_PROVIDER=openai_compatible
-LLM_BASE_URL=http://localhost:8001/v1
+LLM_BASE_URL=http://host.docker.internal:8001/v1
 LLM_MODEL=chatcv-model
 LLM_API_KEY=
 LLM_TEMPERATURE=0.1
 LLM_TIMEOUT=120
+```
 
+Adjust the server's loopback binding if the app cannot reach it; protect access.
+For authenticated servers, set their own `LLM_API_KEY`. These small Qwen models
+are setup examples, not quality recommendations.
+
+### Embeddings: independent of all chat cases
+
+Keep the default hosted embeddings, or configure a separate local embedding model:
+
+```dotenv
 EMBEDDING_PROVIDER=openai_compatible
 EMBEDDING_BASE_URL=https://api.openai.com/v1
 EMBEDDING_MODEL=text-embedding-3-small
@@ -100,16 +101,13 @@ EMBEDDING_API_KEY=your-openai-api-key
 EMBEDDING_TIMEOUT=60
 ```
 
-The example server is local and keyless. For a remote or authenticated deployment,
-replace the URL and set `LLM_API_KEY` to that server's own key. The chat server
-does not automatically provide embeddings; these settings deliberately keep
-them on OpenAI. Ollama and vLLM use the same small Qwen model family here for
-setup checks, not as an answer-quality recommendation.
+These settings send document chunks and search queries to OpenAI even with local
+chat. Qwen above is not an embedding model. See [Independent embeddings](#independent-embeddings).
 
-ChatCV does not start either model server. See the optional
-[server tutorial](tutorials/model-servers.md) for installation and hardware choices.
-After editing `.env`, run `docker compose up -d` to recreate the app container,
-or restart the local Pixi app process.
+ChatCV manages neither server. Compose has no `ollama` service: its old hostname
+does not resolve, and `docker compose logs ollama` cannot show native-server logs.
+See the [server tutorial](tutorials/model-servers.md). After `.env` changes run
+`docker compose up -d` (not `restart`), or restart the local Pixi process.
 
 ## Keys and network boundaries
 
