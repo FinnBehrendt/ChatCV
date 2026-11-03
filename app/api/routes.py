@@ -1,4 +1,5 @@
 import time
+from typing import Annotated
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
 
@@ -10,6 +11,8 @@ from app.auth.auth import (
     logout_user,
     require_auth,
 )
+from app.config import config
+from app.modules.conversations import ConversationStore, get_conversation_store
 from app.modules.job_matching import (
     analyze_job_match,
     process_job_description,
@@ -128,6 +131,8 @@ async def auth_status(request: Request):
 @router.post("/chat")
 async def chat(
     request: Request,
+    response: Response,
+    conversations: Annotated[ConversationStore, Depends(get_conversation_store)],
     query: str = Body(..., embed=True),
     user_code: str = Depends(require_auth),
 ):
@@ -139,6 +144,18 @@ async def chat(
     user_info = get_user_info(user_code)
     company = user_info.get("company", "Unknown")
     session_token = request.cookies.get("session_token")
+
+    visitor_id, conversation = conversations.open(
+        request.cookies.get("visitor_session")
+    )
+    response.set_cookie(
+        key="visitor_session",
+        value=visitor_id,
+        httponly=True,
+        samesite="lax",
+        secure=config.security.secure_cookies
+        and request.url.hostname not in {"localhost", "127.0.0.1", "::1"},
+    )
 
     api_logger.info(
         "Received chat query from %s, query length: %d", company, len(query)
@@ -154,6 +171,7 @@ async def chat(
     result = get_chat_completion(
         query,
         user_metadata=user_metadata,
+        conversation=conversation,
     )
 
     response_time = time.time() - start_time

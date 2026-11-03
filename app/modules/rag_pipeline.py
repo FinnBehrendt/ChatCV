@@ -12,11 +12,11 @@ from dotenv import load_dotenv
 from langchain.chains import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain.chains.history_aware_retriever import create_history_aware_retriever
-from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableLambda
 
 from app.config import config
+from app.modules.conversations import Conversation
 from app.modules.guardrails import QueryValidator
 from app.modules.model_provider import ModelProvider
 from app.modules.vectorstore_provider import DocumentHandler, VectorStoreManager
@@ -92,9 +92,7 @@ class ChatRAGPipeline:
         self.query_validator = QueryValidator(self.config, rag_logger)
 
         self.qa_chain = None
-        self.chat_history = None
         self._chain_lock = threading.Lock()
-        self._history_lock = threading.Lock()
         self._initialized = True
         rag_logger.info("ChatRAGPipeline instance setup complete")
 
@@ -182,7 +180,11 @@ class ChatRAGPipeline:
         run_type="llm", name="Chat Completion", tags=["chatcv", "rag"], metadata={}
     )
     def get_completion(
-        self, query: str, user_metadata: dict[str, Any] | None = None
+        self,
+        query: str,
+        user_metadata: dict[str, Any] | None = None,
+        *,
+        conversation: Conversation | None = None,
     ) -> dict[str, Any]:
         """
         Process chat query and return response with conversation history.
@@ -190,6 +192,7 @@ class ChatRAGPipeline:
         Args:
             query (str): User query string
             user_metadata (Optional[Dict]): Additional user context
+            conversation: Caller-owned context; omitted calls are stateless.
 
         Returns:
             Dict[str, Any]: Response containing answer and sources
@@ -203,22 +206,15 @@ class ChatRAGPipeline:
             current_run.metadata["user_metadata"] = user_metadata
 
         try:
-            # Thread-safe conversation history management
-            with self._history_lock:
-                if self.chat_history is None:
-                    self.chat_history = []
-
-                self.chat_history.append(HumanMessage(content=query))
-                current_history = self.chat_history.copy()
+            current_history = conversation.snapshot() if conversation else []
 
             # Process query through RAG pipeline
             result = self.qa_chain.invoke(
                 {"input": query, "chat_history": current_history}
             )
 
-            # Update conversation history with response
-            with self._history_lock:
-                self.chat_history.append(AIMessage(content=result["answer"]))
+            if conversation is not None:
+                conversation.append_turn(query, result["answer"])
 
             rag_logger.info("Chat completion processed successfully")
             return {"answer": result, "sources": result.get("context", [])}
@@ -244,12 +240,15 @@ def get_chat_pipeline() -> ChatRAGPipeline:
 
 
 def get_chat_completion(
-    query: str, user_metadata: dict[str, Any] | None = None
+    query: str,
+    user_metadata: dict[str, Any] | None = None,
+    *,
+    conversation: Conversation | None = None,
 ) -> dict[str, Any]:
     """Get chat completion using thread-safe pipeline."""
     rag_logger.info("get_chat_completion invoked")
     pipeline = get_chat_pipeline()
-    return pipeline.get_completion(query, user_metadata)
+    return pipeline.get_completion(query, user_metadata, conversation=conversation)
 
 
 if __name__ == "__main__":
