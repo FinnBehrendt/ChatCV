@@ -16,7 +16,7 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableLambda
 
 from app.config import config
-from app.modules.conversations import Conversation
+from app.modules.conversations import Conversation, ConversationReset
 from app.modules.guardrails import QueryValidator
 from app.modules.model_provider import ModelProvider
 from app.modules.vectorstore_provider import DocumentHandler, VectorStoreManager
@@ -198,6 +198,7 @@ class ChatRAGPipeline:
             Dict[str, Any]: Response containing answer and sources
         """
         rag_logger.info(f"Processing chat query, length: {len(query)}")
+        revision, current_history = conversation.snapshot() if conversation else (0, [])
         self._initialize_qa_chain()
 
         # Add user metadata to LangSmith tracing
@@ -206,19 +207,19 @@ class ChatRAGPipeline:
             current_run.metadata["user_metadata"] = user_metadata
 
         try:
-            current_history = conversation.snapshot() if conversation else []
-
             # Process query through RAG pipeline
             result = self.qa_chain.invoke(
                 {"input": query, "chat_history": current_history}
             )
 
             if conversation is not None:
-                conversation.append_turn(query, result["answer"])
+                conversation.append_turn(query, result["answer"], revision=revision)
 
             rag_logger.info("Chat completion processed successfully")
             return {"answer": result, "sources": result.get("context", [])}
 
+        except ConversationReset:
+            raise
         except ValueError as validation_error:
             rag_logger.warning(f"Query validation failed: {validation_error!s}")
             return {"answer": {"answer": str(validation_error)}, "sources": []}

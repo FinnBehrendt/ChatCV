@@ -138,6 +138,7 @@
                     <p id="input-help" class="text-sm text-gray-500 mt-2">
                         Press Enter to submit, Shift+Enter for new line. Maximum 1000 characters.
                     </p>
+                    <p id="chat-status" role="status" aria-live="polite"></p>
 
                     <div id="rate-limit-warning"
                          class="hidden mt-2 p-2 bg-yellow-100 border border-yellow-400 text-yellow-700 rounded"
@@ -231,6 +232,9 @@
         userInfo: null,
         lastRequestTime: 0,
         RATE_LIMIT_MS: 3000,
+        conversationRevision: 0,
+        isSubmitting: false,
+        isClearing: false,
         authEnabled: true  // Will be set based on server response
     };
 
@@ -247,6 +251,7 @@
         submitBtn: document.getElementById('submit-btn'),
         clearBtn: document.getElementById('clear-chat'),
         responseDiv: document.getElementById('response'),
+        chatStatus: document.getElementById('chat-status'),
         summaryBtn: document.getElementById('summary-button'),
         summaryDiv: document.getElementById('summary-response'),
         rateLimitWarning: document.getElementById('rate-limit-warning')
@@ -379,7 +384,8 @@
         }
 
         static setSubmitState(isSubmitting) {
-            Elements.submitBtn.disabled = isSubmitting;
+            AppState.isSubmitting = isSubmitting;
+            Elements.submitBtn.disabled = isSubmitting || AppState.isClearing;
             Elements.submitBtn.textContent = isSubmitting ? 'Processing...' : 'Submit Query';
         }
     }
@@ -427,6 +433,24 @@
             });
 
             return response.json();
+        }
+
+        static async clearConversation() {
+            const response = await this.makeAuthenticatedRequest('/chat/conversation', {
+                method: 'DELETE'
+            });
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+        }
+
+        static async prepareConversation() {
+            const response = await this.makeAuthenticatedRequest('/chat/conversation', {
+                method: 'POST'
+            });
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
         }
 
         static async analyzeJobMatch(jobDescription) {
@@ -609,6 +633,7 @@
 
         Elements.chatForm.addEventListener('submit', async (event) => {
             event.preventDefault();
+            if (AppState.isClearing || AppState.isSubmitting) return;
 
             const query = Elements.chatQuery.value.trim();
             const validation = InputValidator.validateQuery(query);
@@ -624,6 +649,7 @@
                 return;
             }
 
+            const revision = AppState.conversationRevision;
             UIManager.setSubmitState(true);
             UIManager.addMessage('user', query);
             Elements.chatQuery.value = '';
@@ -634,13 +660,22 @@
             Elements.responseDiv.appendChild(loadingIndicator);
 
             try {
+                // Receive the ownership cookie before generation can be cleared.
+                Elements.clearBtn.disabled = true;
+                try {
+                    await APIClient.prepareConversation();
+                } finally {
+                    Elements.clearBtn.disabled = false;
+                }
                 const data = await APIClient.submitQuery(query);
                 loadingIndicator.remove();
+                if (revision !== AppState.conversationRevision) return;
 
                 const answer = data.answer?.answer || data.answer || 'No response available';
                 UIManager.addMessage('assistant', answer);
             } catch (error) {
                 loadingIndicator.remove();
+                if (revision !== AppState.conversationRevision) return;
                 console.error('Query error:', error);
 
                 let errorMessage = 'An error occurred. Please try again.';
@@ -652,12 +687,30 @@
 
                 UIManager.addMessage('assistant', errorMessage);
             } finally {
-                UIManager.setSubmitState(false);
+                if (revision === AppState.conversationRevision) {
+                    UIManager.setSubmitState(false);
+                }
             }
         });
 
-        Elements.clearBtn.addEventListener('click', () => {
-            Elements.responseDiv.innerHTML = '';
+        Elements.clearBtn.addEventListener('click', async () => {
+            if (AppState.isClearing) return;
+            AppState.isClearing = true;
+            Elements.clearBtn.disabled = true;
+            Elements.submitBtn.disabled = true;
+            Elements.chatStatus.textContent = '';
+            try {
+                await APIClient.clearConversation();
+                AppState.conversationRevision += 1;
+                Elements.responseDiv.innerHTML = '';
+                UIManager.setSubmitState(false);
+            } catch (error) {
+                Elements.chatStatus.textContent = 'Could not clear the conversation. Please try again.';
+            } finally {
+                AppState.isClearing = false;
+                Elements.clearBtn.disabled = false;
+                Elements.submitBtn.disabled = AppState.isSubmitting;
+            }
         });
 
         Elements.summaryBtn.addEventListener('click', async () => {

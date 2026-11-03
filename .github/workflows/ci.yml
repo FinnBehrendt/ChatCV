@@ -33,6 +33,9 @@ jobs:
     - name: Security check with bandit
       run: pixi run --locked security
 
+    - name: Install headless browser for UI tests
+      run: pixi run --locked playwright install --with-deps --only-shell chromium
+
     - name: Run tests with pytest
       run: pixi run --locked test-cov --cov-report=html
 

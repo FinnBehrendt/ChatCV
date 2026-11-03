@@ -7,22 +7,34 @@ from fastapi import Request
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
 
+class ConversationReset(Exception):
+    """Generation belongs to a conversation version that has been reset."""
+
+
 class Conversation:
     """Own the completed turns of one visitor's conversation."""
 
     def __init__(self) -> None:
         self._messages: list[BaseMessage] = []
+        self._revision = 0
         self._lock = threading.Lock()
 
-    def snapshot(self) -> list[BaseMessage]:
+    def snapshot(self) -> tuple[int, list[BaseMessage]]:
         with self._lock:
-            return self._messages.copy()
+            return self._revision, self._messages.copy()
 
-    def append_turn(self, question: str, answer: str) -> None:
+    def append_turn(self, question: str, answer: str, *, revision: int) -> None:
         with self._lock:
+            if revision != self._revision:
+                raise ConversationReset
             self._messages.extend(
                 [HumanMessage(content=question), AIMessage(content=answer)]
             )
+
+    def clear(self) -> None:
+        with self._lock:
+            self._revision += 1
+            self._messages.clear()
 
 
 class ConversationStore:
@@ -38,6 +50,13 @@ class ConversationStore:
                 visitor_id = secrets.token_urlsafe(32)
                 self._conversations[visitor_id] = Conversation()
             return visitor_id, self._conversations[visitor_id]
+
+    def clear(self, visitor_id: str | None) -> None:
+        """Reset an existing visitor's context without creating another session."""
+        with self._lock:
+            conversation = self._conversations.get(visitor_id) if visitor_id else None
+            if conversation is not None:
+                conversation.clear()
 
 
 _initialization_lock = threading.Lock()

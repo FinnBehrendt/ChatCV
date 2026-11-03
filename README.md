@@ -370,6 +370,18 @@ Just open an issue or send a PR. I'm always looking to make this better.
 
 ### Local commit checks
 
+The test suite includes Chromium UI tests against a temporary local app with
+synthetic documents and model responses (no API keys or model server needed).
+Install its headless browser once after installing the Pixi environment:
+
+```bash
+pixi run --locked playwright install --only-shell chromium
+```
+
+On Linux, add `--with-deps` to install required browser system libraries. CI
+performs this setup automatically. Playwright is a development dependency only;
+the application Docker image does not include it.
+
 After installing the Pixi environment, activate the Git hook once per clone so the CI doesn't yell at you:
 
 ```bash
