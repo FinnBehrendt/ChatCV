@@ -34,9 +34,9 @@ jobs:
       run: pixi run --locked security
 
     - name: Install headless browser for UI tests
-      run: pixi run --locked playwright install --with-deps --only-shell chromium
+      run: pixi run --locked browser-install-ci
 
-    - name: Run tests with pytest
+    - name: Run all tests including browser tests with coverage
       run: pixi run --locked test-cov --cov-report=html
 
     - name: Upload coverage to Codecov

@@ -3,12 +3,12 @@ repos:
   - repo: local
     hooks:
       - id: pixi-check
-        name: Tests, lint, formatting, types and security (Pixi)
+        name: Fast tests, lint, formatting, types and security (Pixi)
         entry: pixi run --locked check
         language: system
         pass_filenames: false
         # Each task checks the project, not only the staged files.
-        files: '^(app/|tests/|config/|docker-compose\.yml$|main\.py$|pixi\.(toml|lock)$|ruff\.toml$|\.pre-commit-config\.yaml$)'
+        files: '^(app/|tests/|templates/|config/|docker-compose\.yml$|main\.py$|pixi\.(toml|lock)$|pytest\.ini$|ruff\.toml$|\.pre-commit-config\.yaml$)'
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0

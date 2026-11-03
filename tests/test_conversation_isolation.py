@@ -303,6 +303,7 @@ def test_clear_discards_an_in_flight_answer(
     assert follow_up.json()["answer"]["answer"] == "Topics: "
 
 
+@pytest.mark.browser
 @pytest.mark.parametrize("first_query", [True, False])
 def test_clear_button_resets_context_and_hides_a_late_answer(
     browser_page: Page, model_server: ModelServer, first_query: bool
@@ -349,6 +350,7 @@ def test_clear_button_resets_context_and_hides_a_late_answer(
     expect(page.locator("#response")).not_to_contain_text("ALPHA")
 
 
+@pytest.mark.browser
 def test_failed_clear_keeps_the_visible_and_server_context(browser_page: Page) -> None:
     page = browser_page
     query = page.locator("#chat-query")

@@ -51,6 +51,10 @@ The manifest and lockfile cover Apple silicon macOS, Linux x86-64 and Linux ARM6
 installs Python and dependencies into the ignored `.pixi/` directory; your
 system Python is not used.
 
+`pixi.lock` pins the resolved package versions for each platform. Commit it with
+dependency changes and use `pixi install --locked` to reproduce that resolution;
+the manifest specifies compatibility constraints, not a second list of exact pins.
+
 From the repository root:
 
 ```bash
@@ -68,14 +72,18 @@ pixi run dev
 
 | Command | Purpose |
 | --- | --- |
-| `pixi run test` | Run the tests |
-| `pixi run test-cov` | Run tests with coverage |
+| `pixi run test` | Run non-browser tests; no browser download required |
+| `pixi run browser-install` | Download headless Chromium for UI tests |
+| `pixi run test-browser` | Run only browser tests |
+| `pixi run test-full` | Run all tests, including browser tests |
+| `pixi run test-cov` | Run all tests, including browser tests, with coverage |
 | `pixi run lint` | Check with Ruff |
 | `pixi run format-check` | Check formatting without editing files |
 | `pixi run format` | Apply Black formatting |
 | `pixi run typecheck` | Run Mypy |
 | `pixi run security` | Run Bandit |
-| `pixi run check` | Run tests, lint, formatting, type and security checks |
+| `pixi run check` | Run non-browser tests, lint, formatting, type and security checks |
+| `pixi run check-full` | Run the same checks with all tests, including browser tests |
 | `pixi run dev` | Start the app with automatic reload |
 | `pixi run start` | Start the app without reload |
 
@@ -375,12 +383,15 @@ synthetic documents and model responses (no API keys or model server needed).
 Install its headless browser once after installing the Pixi environment:
 
 ```bash
-pixi run --locked playwright install --only-shell chromium
+pixi run --locked browser-install
+pixi run --locked check-full
 ```
 
-On Linux, add `--with-deps` to install required browser system libraries. CI
-performs this setup automatically. Playwright is a development dependency only;
-the application Docker image does not include it.
+On Linux, use `pixi run --locked browser-install-ci` if browser system libraries
+are also needed (may require administrator access). CI performs this setup and
+runs the full suite with coverage. Browser downloads are explicit, not an
+installation or test side effect; repeat setup after a Playwright upgrade.
+Playwright is development-only; the application Docker image does not include it.
 
 After installing the Pixi environment, activate the Git hook once per clone so the CI doesn't yell at you:
 
@@ -394,7 +405,8 @@ pixi run --locked pre-commit run --all-files
 ```
 
 Pixi must be available on the `PATH` of the terminal or Git client creating the
-commit.
+commit. The hook runs `check` without browser tests; run `check-full` before
+opening a PR. CI always includes browser tests.
 
 ---
 
