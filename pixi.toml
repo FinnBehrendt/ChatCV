@@ -37,12 +37,13 @@ mlflow = ">=2.8.0"
 guardrails-ai = "*"
 
 [tasks]
-start = "python -m uvicorn main:app --host 127.0.0.1 --port 8000"
+start = "python -m uvicorn main:app --host 127.0.0.1 --port 8000 --workers 1"
 
 [feature.dev.pypi-dependencies]
 pytest = "*"
 pytest-cov = "*"
 pytest-mock = "*"
+playwright = "*"
 coverage = "*"
 mypy = "*"
 types-requests = "*"
@@ -54,8 +55,12 @@ bandit = "*"
 pre-commit = "*"
 
 [feature.dev.tasks]
-dev = "python -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload"
-test = { cmd = "python -m pytest tests/ -v", env = { LANGSMITH_TRACING = "false", ENVIRONMENT = "development" } }
+dev = "python -m uvicorn main:app --host 127.0.0.1 --port 8000 --workers 1 --reload"
+test = { cmd = "python -m pytest tests/ -v -m 'not browser'", env = { LANGSMITH_TRACING = "false", ENVIRONMENT = "development" } }
+test-browser = { cmd = "python -m pytest tests/ -v -m browser", env = { LANGSMITH_TRACING = "false", ENVIRONMENT = "development" } }
+test-full = { cmd = "python -m pytest tests/ -v", env = { LANGSMITH_TRACING = "false", ENVIRONMENT = "development" } }
+browser-install = "python -m playwright install --only-shell chromium"
+browser-install-ci = "python -m playwright install --with-deps --only-shell chromium"
 test-cov = { cmd = "python -m pytest tests/ -v --cov=app --cov-report=term-missing --cov-report=xml", env = { LANGSMITH_TRACING = "false", ENVIRONMENT = "development" } }
 lint = "ruff check app/ tests/ main.py"
 format-check = "black --check app/ tests/ main.py"
@@ -63,6 +68,7 @@ format = "black app/ tests/ main.py"
 typecheck = "mypy app/ --ignore-missing-imports"
 security = "bandit -r app/"
 check = { depends-on = ["test", "lint", "format-check", "typecheck", "security"] }
+check-full = { depends-on = ["test-full", "lint", "format-check", "typecheck", "security"] }
 
 [environments]
 default = { features = ["dev"], solve-group = "chatcv" }

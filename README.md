@@ -51,6 +51,10 @@ The manifest and lockfile cover Apple silicon macOS, Linux x86-64 and Linux ARM6
 installs Python and dependencies into the ignored `.pixi/` directory; your
 system Python is not used.
 
+`pixi.lock` pins the resolved package versions for each platform. Commit it with
+dependency changes and use `pixi install --locked` to reproduce that resolution;
+the manifest specifies compatibility constraints, not a second list of exact pins.
+
 From the repository root:
 
 ```bash
@@ -68,14 +72,18 @@ pixi run dev
 
 | Command | Purpose |
 | --- | --- |
-| `pixi run test` | Run the tests |
-| `pixi run test-cov` | Run tests with coverage |
+| `pixi run test` | Run non-browser tests; no browser download required |
+| `pixi run browser-install` | Download headless Chromium for UI tests |
+| `pixi run test-browser` | Run only browser tests |
+| `pixi run test-full` | Run all tests, including browser tests |
+| `pixi run test-cov` | Run all tests, including browser tests, with coverage |
 | `pixi run lint` | Check with Ruff |
 | `pixi run format-check` | Check formatting without editing files |
 | `pixi run format` | Apply Black formatting |
 | `pixi run typecheck` | Run Mypy |
 | `pixi run security` | Run Bandit |
-| `pixi run check` | Run tests, lint, formatting, type and security checks |
+| `pixi run check` | Run non-browser tests, lint, formatting, type and security checks |
+| `pixi run check-full` | Run the same checks with all tests, including browser tests |
 | `pixi run dev` | Start the app with automatic reload |
 | `pixi run start` | Start the app without reload |
 
@@ -358,7 +366,55 @@ Give specific people access with custom invite codes.
 3. The LLM writes a natural response using that context (and chat history)
 4. Safety filters make sure everything stays professional
 
-Simple, but it works really well.
+Conversation history currently lives in one application process: use one worker,
+without replicas. Reload restores live history; tabs in the same browser profile
+use `BroadcastChannel` change signals to refresh it from the server. Clear and
+successful login/logout reset conversation context. Restarts lose that context;
+resets do not delete external provider records or diagnostic traces. Durable
+storage and shared multi-worker state remain separate follow-ups.
+
+Pixi and container entrypoints explicitly select `--workers 1`. Startup rejects
+other worker counts in `WEB_CONCURRENCY`, `UVICORN_WORKERS`, recognized CLI worker
+flags and `GUNICORN_CMD_ARGS`. Keep ASGI lifespan enabled. These are practical
+configuration checks, not detection of independently launched replicas: run only
+one application instance. Distributed state remains out of scope.
+
+Compose forwards all three `CONVERSATION_*` settings below. Apply `.env` changes
+with `docker compose up -d` to recreate the app when needed; `restart` alone
+keeps the existing container environment.
+
+Model context and the displayed transcript retain only the latest 20 completed
+question/answer pairs. Set `CONVERSATION_MAX_TURNS` to a positive integer in
+`.env` to change this window; restart the app after changing it.
+
+Only successfully generated, validated answers enter conversation history.
+Failed attempts appear as notices, not assistant turns, and retain the question
+for editing or manual retry without changing earlier successful context.
+
+Idle context expires after 30 minutes (`CONVERSATION_IDLE_MINUTES`, positive
+integer). Successful turns and explicit resets renew the idle period; passive
+reads and cookie preparation do not. Expiry is checked on access and before
+accepting generated answers, not by a background timer. The browser explains
+the reset and preserves a submitted question for manual resubmission, without
+automatically generating an answer using empty context.
+
+At most 100 visitor conversations are tracked (`CONVERSATION_CAPACITY`, positive
+integer; restart after changes). Creating a conversation first reclaims expired
+entries; active histories are never evicted to admit another visitor. If still
+full, new visitors receive HTTP 503 and keep their draft for a later manual
+retry. Returning visitors whose state was reclaimed receive the expiry notice
+before starting fresh. This limits tracked state, not already-running inference.
+
+Only one chat generation may run per conversation. Overlapping requests receive
+HTTP 409; the browser keeps the question for an explicit retry instead of
+automatically resending it. Clear invalidates pending output but does not cancel
+inference, so the conversation may remain busy until that request finishes.
+A request reserves its conversation before waiting for a worker. Clear and
+authentication changes invalidate queued work before model inference begins.
+Browser session setup uses [Web Locks](https://www.w3.org/TR/web-locks/) to avoid
+two fresh tabs creating different sessions. Use a browser supporting Web Locks
+over HTTPS (or localhost for development); otherwise setup stops with a notice
+and preserves the question.
 
 ---
 
@@ -369,6 +425,21 @@ Got ideas? Found bugs? Want to add features?
 Just open an issue or send a PR. I'm always looking to make this better.
 
 ### Local commit checks
+
+The test suite includes Chromium UI tests against a temporary local app with
+synthetic documents and model responses (no API keys or model server needed).
+Install its headless browser once after installing the Pixi environment:
+
+```bash
+pixi run --locked browser-install
+pixi run --locked check-full
+```
+
+On Linux, use `pixi run --locked browser-install-ci` if browser system libraries
+are also needed (may require administrator access). CI performs this setup and
+runs the full suite with coverage. Browser downloads are explicit, not an
+installation or test side effect; repeat setup after a Playwright upgrade.
+Playwright is development-only; the application Docker image does not include it.
 
 After installing the Pixi environment, activate the Git hook once per clone so the CI doesn't yell at you:
 
@@ -382,7 +453,8 @@ pixi run --locked pre-commit run --all-files
 ```
 
 Pixi must be available on the `PATH` of the terminal or Git client creating the
-commit.
+commit. The hook runs `check` without browser tests; run `check-full` before
+opening a PR. CI always includes browser tests.
 
 ---
 

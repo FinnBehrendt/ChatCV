@@ -14,6 +14,7 @@ from fastapi.templating import Jinja2Templates
 
 from app.api.routes import router as chat_router
 from app.config import config
+from app.deployment import require_single_worker
 from app.utils.logging_config import main_logger
 
 # Initialize logging
@@ -55,6 +56,7 @@ async def index(request: Request) -> HTMLResponse:
             "candidate_linkedin": config.candidate.linkedin,
             "candidate_github": config.candidate.github,
             "cv_path": "/resume",
+            "conversation_max_turns": config.conversation_max_turns,
         },
     )
 
@@ -82,6 +84,7 @@ async def health_check() -> dict[str, str]:
 @app.on_event("startup")
 async def startup_event() -> None:
     """Handle application startup tasks."""
+    require_single_worker()
     logger.info("ChatCV application startup completed")
 
 

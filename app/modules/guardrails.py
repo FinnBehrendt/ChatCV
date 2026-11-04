@@ -140,10 +140,15 @@ class QueryValidator:
 
         Returns:
             str: Validated response string.
+
+        Raises:
+            ValueError: If output is rejected; fallback text is not a valid turn.
         """
         self.logger.debug(f"Validating response output, length: {len(response)}")
 
         try:
+            if not response.strip():
+                raise ValueError("Model returned an empty response")
             if GUARDRAILS_AVAILABLE:
                 # Initialize output validation guards
                 toxic_guard = Guard().use(
@@ -160,9 +165,13 @@ class QueryValidator:
                 mock_guard = Guard()
                 mock_guard.validate(response)
             return response
-        except Exception:
+        except Exception as error:
             self.logger.warning("Response validation failed", exc_info=True)
-            return self.config.chat_fallback_response
+            raise ValueError(
+                self.config.chat_fallback_response.format(
+                    candidate_name=self.config.candidate.name
+                )
+            ) from error
 
 
 class InputValidator:

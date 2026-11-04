@@ -12,11 +12,11 @@ from dotenv import load_dotenv
 from langchain.chains import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain.chains.history_aware_retriever import create_history_aware_retriever
-from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableLambda
 
 from app.config import config
+from app.modules.conversations import Conversation, ConversationReset, Generation
 from app.modules.guardrails import QueryValidator
 from app.modules.model_provider import ModelProvider
 from app.modules.vectorstore_provider import DocumentHandler, VectorStoreManager
@@ -92,9 +92,7 @@ class ChatRAGPipeline:
         self.query_validator = QueryValidator(self.config, rag_logger)
 
         self.qa_chain = None
-        self.chat_history = None
         self._chain_lock = threading.Lock()
-        self._history_lock = threading.Lock()
         self._initialized = True
         rag_logger.info("ChatRAGPipeline instance setup complete")
 
@@ -182,7 +180,12 @@ class ChatRAGPipeline:
         run_type="llm", name="Chat Completion", tags=["chatcv", "rag"], metadata={}
     )
     def get_completion(
-        self, query: str, user_metadata: dict[str, Any] | None = None
+        self,
+        query: str,
+        user_metadata: dict[str, Any] | None = None,
+        *,
+        conversation: Conversation | None = None,
+        expected_revision: int | None = None,
     ) -> dict[str, Any]:
         """
         Process chat query and return response with conversation history.
@@ -190,11 +193,18 @@ class ChatRAGPipeline:
         Args:
             query (str): User query string
             user_metadata (Optional[Dict]): Additional user context
+            conversation: Caller-owned context; omitted calls are stateless.
+            expected_revision: Context version fixed at request admission.
 
         Returns:
             Dict[str, Any]: Response containing answer and sources
         """
         rag_logger.info(f"Processing chat query, length: {len(query)}")
+        revision, current_history = (
+            conversation.snapshot(expected_revision=expected_revision)
+            if conversation
+            else (0, [])
+        )
         self._initialize_qa_chain()
 
         # Add user metadata to LangSmith tracing
@@ -203,29 +213,30 @@ class ChatRAGPipeline:
             current_run.metadata["user_metadata"] = user_metadata
 
         try:
-            # Thread-safe conversation history management
-            with self._history_lock:
-                if self.chat_history is None:
-                    self.chat_history = []
-
-                self.chat_history.append(HumanMessage(content=query))
-                current_history = self.chat_history.copy()
-
             # Process query through RAG pipeline
             result = self.qa_chain.invoke(
                 {"input": query, "chat_history": current_history}
             )
 
-            # Update conversation history with response
-            with self._history_lock:
-                self.chat_history.append(AIMessage(content=result["answer"]))
+            if conversation is not None:
+                conversation.append_turn(query, result["answer"], revision=revision)
 
             rag_logger.info("Chat completion processed successfully")
-            return {"answer": result, "sources": result.get("context", [])}
+            return {
+                "answer": result,
+                "sources": result.get("context", []),
+                "completed": True,
+            }
 
+        except ConversationReset:
+            raise
         except ValueError as validation_error:
             rag_logger.warning(f"Query validation failed: {validation_error!s}")
-            return {"answer": {"answer": str(validation_error)}, "sources": []}
+            return {
+                "answer": {"answer": str(validation_error)},
+                "sources": [],
+                "completed": False,
+            }
         except Exception:
             rag_logger.exception("Unexpected error in chat completion")
             formatted_fallback = self.config.chat_fallback_response.format(
@@ -234,6 +245,7 @@ class ChatRAGPipeline:
             return {
                 "answer": {"answer": formatted_fallback},
                 "sources": [],
+                "completed": False,
             }
 
 
@@ -244,12 +256,22 @@ def get_chat_pipeline() -> ChatRAGPipeline:
 
 
 def get_chat_completion(
-    query: str, user_metadata: dict[str, Any] | None = None
+    query: str,
+    user_metadata: dict[str, Any] | None = None,
+    *,
+    conversation: Conversation | None = None,
+    generation: Generation | None = None,
 ) -> dict[str, Any]:
     """Get chat completion using thread-safe pipeline."""
     rag_logger.info("get_chat_completion invoked")
-    pipeline = get_chat_pipeline()
-    return pipeline.get_completion(query, user_metadata)
+    if conversation is None:
+        return get_chat_pipeline().get_completion(query, user_metadata)
+    reservation = generation or conversation.reserve_generation()
+    with reservation.running() as revision:
+        pipeline = get_chat_pipeline()
+        return pipeline.get_completion(
+            query, user_metadata, conversation=conversation, expected_revision=revision
+        )
 
 
 if __name__ == "__main__":

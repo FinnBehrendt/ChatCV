@@ -111,6 +111,9 @@ class AppConfig(BaseSettings):
 
     environment: str = Field(default="development")
     debug: bool = False
+    conversation_max_turns: int = Field(default=20, gt=0)
+    conversation_idle_minutes: int = Field(default=30, gt=0)
+    conversation_capacity: int = Field(default=100, gt=0)
     openai_api_key: SecretStr | None = Field(
         default=None, alias="OPENAI_API_KEY", repr=False
     )

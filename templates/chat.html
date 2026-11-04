@@ -109,6 +109,9 @@
                          aria-label="Conversation history">
                     </div>
 
+                    <p class="text-sm text-gray-500 mb-2">
+                        Only the latest {{ conversation_max_turns }} completed question/answer pairs are remembered and displayed.
+                    </p>
                     <form id="chat-form" class="mt-2">
                         <label for="chat-query" class="sr-only">Enter your question</label>
                         <textarea id="chat-query"
@@ -138,6 +141,7 @@
                     <p id="input-help" class="text-sm text-gray-500 mt-2">
                         Press Enter to submit, Shift+Enter for new line. Maximum 1000 characters.
                     </p>
+                    <p id="chat-status" role="status" aria-live="polite"></p>
 
                     <div id="rate-limit-warning"
                          class="hidden mt-2 p-2 bg-yellow-100 border border-yellow-400 text-yellow-700 rounded"
@@ -225,12 +229,18 @@
 </section>
 
 <script>
+    const CONVERSATION_EXPIRED_NOTICE = 'Conversation expired after inactivity. Review and resubmit your question.';
     // Application State
     const AppState = {
         isAuthenticated: false,
         userInfo: null,
         lastRequestTime: 0,
         RATE_LIMIT_MS: 3000,
+        conversationRevision: 0,
+        restoreSequence: 0,
+        isSubmitting: false,
+        isClearing: false,
+        isRestoring: true,
         authEnabled: true  // Will be set based on server response
     };
 
@@ -247,6 +257,7 @@
         submitBtn: document.getElementById('submit-btn'),
         clearBtn: document.getElementById('clear-chat'),
         responseDiv: document.getElementById('response'),
+        chatStatus: document.getElementById('chat-status'),
         summaryBtn: document.getElementById('summary-button'),
         summaryDiv: document.getElementById('summary-response'),
         rateLimitWarning: document.getElementById('rate-limit-warning')
@@ -279,6 +290,9 @@
                     UIManager.hideLoginModal();
                     UIManager.showUserInfo();
                 } else {
+                    AppState.isAuthenticated = false;
+                    AppState.userInfo = null;
+                    UIManager.hideUserInfo();
                     UIManager.showLoginModal();
                 }
             } catch (error) {
@@ -299,11 +313,13 @@
                 const data = await response.json();
 
                 if (response.ok) {
+                    UIManager.resetConversationView();
                     AppState.isAuthenticated = true;
                     AppState.userInfo = data.user;
                     UIManager.hideLoginModal();
                     UIManager.showUserInfo();
                     UIManager.hideError();
+                    ConversationSync.notify('auth');
                     return { success: true };
                 } else {
                     return { success: false, error: data.detail || 'Invalid invite code' };
@@ -316,22 +332,52 @@
 
         static async logout() {
             try {
-                await fetch('/auth/logout', {
+                const response = await fetch('/auth/logout', {
                     method: 'POST',
                     credentials: 'include'
                 });
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                UIManager.resetConversationView();
                 AppState.isAuthenticated = false;
                 AppState.userInfo = null;
                 UIManager.hideUserInfo();
                 UIManager.showLoginModal();
+                ConversationSync.notify('auth');
             } catch (error) {
                 console.error('Logout failed:', error);
+                Elements.chatStatus.textContent = 'Could not log out. Please try again.';
             }
         }
     }
 
     // UI Management
     class UIManager {
+        static resetConversationView() {
+            AppState.conversationRevision += 1;
+            AppState.isRestoring = false;
+            Elements.responseDiv.replaceChildren();
+            Elements.chatStatus.textContent = '';
+            UIManager.setSubmitState(false);
+            Elements.clearBtn.disabled = AppState.isClearing;
+        }
+
+        static async restoreConversationView() {
+            const revision = AppState.conversationRevision;
+            const sequence = ++AppState.restoreSequence;
+            const data = await APIClient.readConversation();
+            if (revision !== AppState.conversationRevision ||
+                sequence !== AppState.restoreSequence ||
+                AppState.isSubmitting || AppState.isClearing) return false;
+            Elements.responseDiv.replaceChildren();
+            for (const message of data.messages) {
+                UIManager.addMessage(message.role, message.content);
+            }
+            if (data.expired) Elements.chatStatus.textContent = CONVERSATION_EXPIRED_NOTICE;
+            return true;
+        }
+
         static showLoginModal() {
             Elements.loginModal.classList.remove('hidden');
         }
@@ -365,10 +411,14 @@
                 : 'bg-gray-200 text-gray-800 p-3 rounded-lg self-start max-w-[80%]';
 
             const roleLabel = role === 'user' ? 'You' : 'Assistant';
-            message.innerHTML = `<strong>${roleLabel}:</strong> ${text.replace(/\n/g, '<br>')}`;
+            const label = document.createElement('strong');
+            label.textContent = `${roleLabel}:`;
+            message.append(label, ` ${text}`);
+            message.style.whiteSpace = 'pre-wrap';
 
             Elements.responseDiv.appendChild(message);
             Elements.responseDiv.scrollTop = Elements.responseDiv.scrollHeight;
+            return message;
         }
 
         static showRateLimit() {
@@ -379,8 +429,65 @@
         }
 
         static setSubmitState(isSubmitting) {
-            Elements.submitBtn.disabled = isSubmitting;
+            AppState.isSubmitting = isSubmitting;
+            Elements.submitBtn.disabled = isSubmitting || AppState.isClearing || AppState.isRestoring;
             Elements.submitBtn.textContent = isSubmitting ? 'Processing...' : 'Submit Query';
+        }
+    }
+
+    // Tabs exchange invalidation signals, never transcripts or session tokens.
+    class ConversationSync {
+        static channel = typeof BroadcastChannel === 'undefined'
+            ? null : new BroadcastChannel('chatcv-conversation');
+        static pending = false;
+        static authPending = false;
+        static refreshing = false;
+
+        static initialize() {
+            this.channel?.addEventListener('message', (event) => {
+                if (['turn', 'reset', 'auth', 'expired'].includes(event.data)) {
+                    this.refresh(event.data);
+                }
+            });
+        }
+
+        static notify(change) {
+            this.channel?.postMessage(change);
+        }
+
+        static async refresh(change = 'turn') {
+            if (['reset', 'auth', 'expired'].includes(change)) UIManager.resetConversationView();
+            if (change === 'expired') Elements.chatStatus.textContent = CONVERSATION_EXPIRED_NOTICE;
+            if (change === 'auth') this.authPending = true;
+            this.pending = true;
+            if (this.refreshing || AppState.isSubmitting ||
+                AppState.isClearing || AppState.isRestoring) return;
+            this.refreshing = true;
+            try {
+                do {
+                    this.pending = false;
+                    if (this.authPending) {
+                        this.authPending = false;
+                        await AuthManager.checkStatus();
+                    }
+                    if (!AppState.authEnabled || AppState.isAuthenticated) {
+                        const applied = await UIManager.restoreConversationView();
+                        this.pending = this.pending || !applied;
+                    }
+                } while (this.pending && !AppState.isSubmitting &&
+                    !AppState.isClearing && !AppState.isRestoring);
+            } catch (error) {
+                AppState.isRestoring = true;
+                Elements.chatStatus.textContent = 'Could not synchronize the conversation. Reload to retry.';
+                UIManager.setSubmitState(AppState.isSubmitting);
+                Elements.clearBtn.disabled = true;
+            } finally {
+                this.refreshing = false;
+            }
+        }
+
+        static resume() {
+            if (this.pending) this.refresh();
         }
     }
 
@@ -414,6 +521,14 @@
                 body: JSON.stringify({ query })
             });
 
+            const status = response.headers.get('X-Conversation-Status');
+            if ((response.status === 409 && ['busy', 'expired'].includes(status)) ||
+                (response.status === 503 && status === 'capacity')) {
+                const data = await response.json();
+                const error = new Error(data.detail);
+                error.code = `conversation_${status}`;
+                throw error;
+            }
             if (!response.ok) {
                 throw new Error(`HTTP ${response.status}`);
             }
@@ -427,6 +542,53 @@
             });
 
             return response.json();
+        }
+
+        static async clearConversation() {
+            const response = await this.makeAuthenticatedRequest('/chat/conversation', {
+                method: 'DELETE'
+            });
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+        }
+
+        static async readConversation() {
+            const response = await this.makeAuthenticatedRequest('/chat/conversation', {
+                cache: 'no-store'
+            });
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+            const data = await response.json();
+            data.expired = response.headers.get('X-Conversation-Status') === 'expired';
+            return data;
+        }
+
+        static async prepareConversation(revision) {
+            if (!navigator.locks) {
+                const error = new Error('Session setup requires a browser with Web Locks over HTTPS or localhost.');
+                error.code = 'session_setup_unavailable';
+                throw error;
+            }
+            // Cookie setup is shared by tabs; model generation is never queued here.
+            return navigator.locks.request('chatcv-visitor-bootstrap', async () => {
+                if (revision !== AppState.conversationRevision) return;
+                const response = await this.makeAuthenticatedRequest('/chat/conversation', {
+                    method: 'POST'
+                });
+                const status = response.headers.get('X-Conversation-Status');
+                if ((response.status === 409 && status === 'expired') ||
+                    (response.status === 503 && status === 'capacity')) {
+                    const data = await response.json();
+                    const error = new Error(data.detail);
+                    error.code = `conversation_${status}`;
+                    throw error;
+                }
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+            });
         }
 
         static async analyzeJobMatch(jobDescription) {
@@ -589,7 +751,26 @@
 
     // Initialize application and add event handlers
     document.addEventListener('DOMContentLoaded', () => {
-        AuthManager.checkStatus();
+        ConversationSync.initialize();
+        Elements.submitBtn.disabled = true;
+        Elements.clearBtn.disabled = true;
+        const initialRevision = AppState.conversationRevision;
+        AuthManager.checkStatus().then(async () => {
+            try {
+                if (!AppState.authEnabled || AppState.isAuthenticated) {
+                    await UIManager.restoreConversationView();
+                }
+                AppState.isRestoring = false;
+            } catch (error) {
+                if (initialRevision === AppState.conversationRevision) {
+                    Elements.chatStatus.textContent = 'Could not restore the conversation. Reload to retry.';
+                }
+            } finally {
+                UIManager.setSubmitState(AppState.isSubmitting);
+                Elements.clearBtn.disabled = AppState.isRestoring || AppState.isClearing;
+                ConversationSync.resume();
+            }
+        });
         JobMatchingManager.initialize();
 
         // Event Handlers
@@ -609,12 +790,13 @@
 
         Elements.chatForm.addEventListener('submit', async (event) => {
             event.preventDefault();
+            if (AppState.isClearing || AppState.isSubmitting || AppState.isRestoring) return;
 
             const query = Elements.chatQuery.value.trim();
             const validation = InputValidator.validateQuery(query);
 
             if (!validation.valid) {
-                UIManager.addMessage('assistant', validation.error);
+                Elements.chatStatus.textContent = validation.error;
                 return;
             }
 
@@ -624,8 +806,10 @@
                 return;
             }
 
+            const revision = ++AppState.conversationRevision;
             UIManager.setSubmitState(true);
-            UIManager.addMessage('user', query);
+            const userMessage = UIManager.addMessage('user', query);
+            Elements.chatStatus.textContent = '';
             Elements.chatQuery.value = '';
 
             const loadingIndicator = document.createElement('div');
@@ -634,13 +818,45 @@
             Elements.responseDiv.appendChild(loadingIndicator);
 
             try {
+                // Receive the ownership cookie before generation can be cleared.
+                Elements.clearBtn.disabled = true;
+                try {
+                    await APIClient.prepareConversation(revision);
+                } finally {
+                    Elements.clearBtn.disabled = AppState.isClearing;
+                }
+                if (revision !== AppState.conversationRevision) return;
                 const data = await APIClient.submitQuery(query);
                 loadingIndicator.remove();
+                if (revision !== AppState.conversationRevision) return;
 
                 const answer = data.answer?.answer || data.answer || 'No response available';
+                if (data.completed === false) {
+                    const error = new Error(answer);
+                    error.code = 'generation_failed';
+                    throw error;
+                }
                 UIManager.addMessage('assistant', answer);
+                while (Elements.responseDiv.childElementCount > {{ conversation_max_turns }} * 2) {
+                    Elements.responseDiv.firstElementChild.remove();
+                }
+                ConversationSync.notify('turn');
             } catch (error) {
                 loadingIndicator.remove();
+                if (revision !== AppState.conversationRevision) return;
+                if (error.code === 'conversation_expired') {
+                    UIManager.resetConversationView();
+                    Elements.chatQuery.value = query;
+                    Elements.chatStatus.textContent = CONVERSATION_EXPIRED_NOTICE;
+                    ConversationSync.notify('expired');
+                    return;
+                }
+                if (['conversation_busy', 'conversation_capacity', 'session_setup_unavailable', 'generation_failed'].includes(error.code)) {
+                    userMessage.remove();
+                    Elements.chatQuery.value = query;
+                    Elements.chatStatus.textContent = error.message;
+                    return;
+                }
                 console.error('Query error:', error);
 
                 let errorMessage = 'An error occurred. Please try again.';
@@ -650,14 +866,37 @@
                     errorMessage = 'Rate limit exceeded. Please wait a moment.';
                 }
 
-                UIManager.addMessage('assistant', errorMessage);
+                userMessage.remove();
+                Elements.chatQuery.value = query;
+                Elements.chatStatus.textContent = errorMessage;
             } finally {
-                UIManager.setSubmitState(false);
+                if (revision === AppState.conversationRevision) {
+                    UIManager.setSubmitState(false);
+                }
+                ConversationSync.resume();
             }
         });
 
-        Elements.clearBtn.addEventListener('click', () => {
-            Elements.responseDiv.innerHTML = '';
+        Elements.clearBtn.addEventListener('click', async () => {
+            if (AppState.isClearing || AppState.isRestoring) return;
+            AppState.isClearing = true;
+            Elements.clearBtn.disabled = true;
+            Elements.submitBtn.disabled = true;
+            Elements.chatStatus.textContent = '';
+            try {
+                await APIClient.clearConversation();
+                AppState.conversationRevision += 1;
+                Elements.responseDiv.innerHTML = '';
+                UIManager.setSubmitState(false);
+                ConversationSync.notify('reset');
+            } catch (error) {
+                Elements.chatStatus.textContent = 'Could not clear the conversation. Please try again.';
+            } finally {
+                AppState.isClearing = false;
+                Elements.clearBtn.disabled = false;
+                Elements.submitBtn.disabled = AppState.isSubmitting;
+                ConversationSync.resume();
+            }
         });
 
         Elements.summaryBtn.addEventListener('click', async () => {

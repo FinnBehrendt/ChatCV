@@ -1,6 +1,8 @@
 import time
+from typing import Annotated
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
+from starlette.concurrency import run_in_threadpool
 
 from app.auth.auth import (
     authenticate_with_code,
@@ -9,6 +11,15 @@ from app.auth.auth import (
     is_auth_enabled,
     logout_user,
     require_auth,
+)
+from app.config import config
+from app.modules.conversations import (
+    ConversationBusy,
+    ConversationCapacity,
+    ConversationExpired,
+    ConversationReset,
+    ConversationStore,
+    get_conversation_store,
 )
 from app.modules.job_matching import (
     analyze_job_match,
@@ -23,9 +34,33 @@ router = APIRouter()
 advanced_analytics = AdvancedAnalytics()
 
 
+def _expired_conversation_error(*, forget_visitor: bool = False) -> HTTPException:
+    headers = {"X-Conversation-Status": "expired"}
+    if forget_visitor:
+        response = Response()
+        response.delete_cookie("visitor_session")
+        headers["Set-Cookie"] = response.headers["set-cookie"]
+    return HTTPException(
+        status_code=409,
+        detail="Conversation expired after inactivity. Review and resubmit your question.",
+        headers=headers,
+    )
+
+
+def _conversation_capacity_error() -> HTTPException:
+    return HTTPException(
+        status_code=503,
+        detail="Conversation capacity is temporarily full. Please try again later.",
+        headers={"X-Conversation-Status": "capacity", "Retry-After": "60"},
+    )
+
+
 @router.post("/auth/login")
 async def login(
-    request: Request, response: Response, invite_code: str = Body(..., embed=True)
+    request: Request,
+    response: Response,
+    conversations: Annotated[ConversationStore, Depends(get_conversation_store)],
+    invite_code: str = Body(..., embed=True),
 ):
     """
     Authenticate user with an invite code.
@@ -40,6 +75,9 @@ async def login(
         log_login_event(invite_code, user_info.get("company", "Unknown"), False)
         api_logger.warning("Login failed: invalid invite code")
         raise HTTPException(status_code=401, detail="Invalid invite code")
+
+    if not conversations.clear(request.cookies.get("visitor_session")):
+        response.delete_cookie("visitor_session")
 
     log_login_event(invite_code, user_info.get("company", "Unknown"), True)
     api_logger.info(
@@ -78,12 +116,18 @@ async def login(
 
 
 @router.post("/auth/logout")
-async def logout(request: Request, response: Response):
+async def logout(
+    request: Request,
+    response: Response,
+    conversations: Annotated[ConversationStore, Depends(get_conversation_store)],
+):
     """
     Log out the current user by deleting the session cookie.
 
     Ends the chat session in LangSmith and logs the logout event.
     """
+    if not conversations.clear(request.cookies.get("visitor_session")):
+        response.delete_cookie("visitor_session")
     session_token = request.cookies.get("session_token")
     if session_token:
         # End chat session in LangSmith
@@ -125,9 +169,79 @@ async def auth_status(request: Request):
     return {"authenticated": False, "auth_enabled": True}
 
 
+@router.get("/chat/conversation")
+async def read_conversation(
+    request: Request,
+    response: Response,
+    conversations: Annotated[ConversationStore, Depends(get_conversation_store)],
+    user_code: str = Depends(require_auth),
+) -> dict[str, list[dict[str, str]]]:
+    """Return only the current visitor's completed conversation turns."""
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        messages = conversations.read(request.cookies.get("visitor_session"))
+    except ConversationExpired:
+        messages = []
+        response.headers["X-Conversation-Status"] = "expired"
+    return {
+        "messages": [
+            {
+                "role": "user" if message.type == "human" else "assistant",
+                "content": str(message.content),
+            }
+            for message in messages
+        ]
+    }
+
+
+@router.post("/chat/conversation", status_code=204)
+async def prepare_conversation(
+    request: Request,
+    response: Response,
+    conversations: Annotated[ConversationStore, Depends(get_conversation_store)],
+    user_code: str = Depends(require_auth),
+) -> None:
+    """Establish visitor ownership before a potentially long first generation."""
+    try:
+        visitor_id, conversation = conversations.open(
+            request.cookies.get("visitor_session")
+        )
+    except ConversationCapacity as error:
+        raise _conversation_capacity_error() from error
+    except ConversationExpired as error:
+        raise _expired_conversation_error(forget_visitor=True) from error
+    try:
+        conversation.prepare()
+    except ConversationExpired as error:
+        raise _expired_conversation_error() from error
+    response.set_cookie(
+        key="visitor_session",
+        value=visitor_id,
+        httponly=True,
+        samesite="lax",
+        secure=config.security.secure_cookies
+        and request.url.hostname not in {"localhost", "127.0.0.1", "::1"},
+    )
+
+
+@router.delete("/chat/conversation", status_code=204)
+async def clear_conversation(
+    request: Request,
+    conversations: Annotated[ConversationStore, Depends(get_conversation_store)],
+    user_code: str = Depends(require_auth),
+) -> Response:
+    """Reset only the current visitor's conversation, keeping authentication."""
+    response = Response(status_code=204)
+    if not conversations.clear(request.cookies.get("visitor_session")):
+        response.delete_cookie("visitor_session")
+    return response
+
+
 @router.post("/chat")
 async def chat(
     request: Request,
+    response: Response,
+    conversations: Annotated[ConversationStore, Depends(get_conversation_store)],
     query: str = Body(..., embed=True),
     user_code: str = Depends(require_auth),
 ):
@@ -140,6 +254,23 @@ async def chat(
     company = user_info.get("company", "Unknown")
     session_token = request.cookies.get("session_token")
 
+    try:
+        visitor_id, conversation = conversations.open(
+            request.cookies.get("visitor_session")
+        )
+    except ConversationCapacity as error:
+        raise _conversation_capacity_error() from error
+    except ConversationExpired as error:
+        raise _expired_conversation_error(forget_visitor=True) from error
+    response.set_cookie(
+        key="visitor_session",
+        value=visitor_id,
+        httponly=True,
+        samesite="lax",
+        secure=config.security.secure_cookies
+        and request.url.hostname not in {"localhost", "127.0.0.1", "::1"},
+    )
+
     api_logger.info(
         "Received chat query from %s, query length: %d", company, len(query)
     )
@@ -150,11 +281,32 @@ async def chat(
     # Measure response time
     start_time = time.time()
 
-    # Call with langsmith_extra parameter
-    result = get_chat_completion(
-        query,
-        user_metadata=user_metadata,
-    )
+    # Admission belongs before threadpool scheduling, not inside the worker.
+    generation = None
+    try:
+        generation = conversation.reserve_generation()
+        result = await run_in_threadpool(
+            get_chat_completion,
+            query,
+            user_metadata=user_metadata,
+            conversation=conversation,
+            generation=generation,
+        )
+    except ConversationBusy as error:
+        raise HTTPException(
+            status_code=409,
+            detail="Conversation is busy. Please wait for the current answer.",
+            headers={"X-Conversation-Status": "busy"},
+        ) from error
+    except ConversationExpired as error:
+        raise _expired_conversation_error() from error
+    except ConversationReset as error:
+        raise HTTPException(
+            status_code=409, detail="Conversation was reset; answer discarded."
+        ) from error
+    finally:
+        if generation is not None:
+            generation.cancel_if_not_started()
 
     response_time = time.time() - start_time
 
