@@ -6,7 +6,6 @@ for interactive resume querying using LangChain, ChromaDB, and various LLM provi
 """
 
 import threading
-from contextlib import nullcontext
 from typing import Any
 
 from dotenv import load_dotenv
@@ -17,7 +16,7 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableLambda
 
 from app.config import config
-from app.modules.conversations import Conversation, ConversationReset
+from app.modules.conversations import Conversation, ConversationReset, Generation
 from app.modules.guardrails import QueryValidator
 from app.modules.model_provider import ModelProvider
 from app.modules.vectorstore_provider import DocumentHandler, VectorStoreManager
@@ -186,6 +185,7 @@ class ChatRAGPipeline:
         user_metadata: dict[str, Any] | None = None,
         *,
         conversation: Conversation | None = None,
+        expected_revision: int | None = None,
     ) -> dict[str, Any]:
         """
         Process chat query and return response with conversation history.
@@ -194,12 +194,17 @@ class ChatRAGPipeline:
             query (str): User query string
             user_metadata (Optional[Dict]): Additional user context
             conversation: Caller-owned context; omitted calls are stateless.
+            expected_revision: Context version fixed at request admission.
 
         Returns:
             Dict[str, Any]: Response containing answer and sources
         """
         rag_logger.info(f"Processing chat query, length: {len(query)}")
-        revision, current_history = conversation.snapshot() if conversation else (0, [])
+        revision, current_history = (
+            conversation.snapshot(expected_revision=expected_revision)
+            if conversation
+            else (0, [])
+        )
         self._initialize_qa_chain()
 
         # Add user metadata to LangSmith tracing
@@ -255,12 +260,18 @@ def get_chat_completion(
     user_metadata: dict[str, Any] | None = None,
     *,
     conversation: Conversation | None = None,
+    generation: Generation | None = None,
 ) -> dict[str, Any]:
     """Get chat completion using thread-safe pipeline."""
     rag_logger.info("get_chat_completion invoked")
-    with conversation.generation() if conversation is not None else nullcontext():
+    if conversation is None:
+        return get_chat_pipeline().get_completion(query, user_metadata)
+    reservation = generation or conversation.reserve_generation()
+    with reservation.running() as revision:
         pipeline = get_chat_pipeline()
-        return pipeline.get_completion(query, user_metadata, conversation=conversation)
+        return pipeline.get_completion(
+            query, user_metadata, conversation=conversation, expected_revision=revision
+        )
 
 
 if __name__ == "__main__":

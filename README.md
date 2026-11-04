@@ -379,6 +379,10 @@ flags and `GUNICORN_CMD_ARGS`. Keep ASGI lifespan enabled. These are practical
 configuration checks, not detection of independently launched replicas: run only
 one application instance. Distributed state remains out of scope.
 
+Compose forwards all three `CONVERSATION_*` settings below. Apply `.env` changes
+with `docker compose up -d` to recreate the app when needed; `restart` alone
+keeps the existing container environment.
+
 Model context and the displayed transcript retain only the latest 20 completed
 question/answer pairs. Set `CONVERSATION_MAX_TURNS` to a positive integer in
 `.env` to change this window; restart the app after changing it.
@@ -405,6 +409,8 @@ Only one chat generation may run per conversation. Overlapping requests receive
 HTTP 409; the browser keeps the question for an explicit retry instead of
 automatically resending it. Clear invalidates pending output but does not cancel
 inference, so the conversation may remain busy until that request finishes.
+A request reserves its conversation before waiting for a worker. Clear and
+authentication changes invalidate queued work before model inference begins.
 Browser session setup uses [Web Locks](https://www.w3.org/TR/web-locks/) to avoid
 two fresh tabs creating different sessions. Use a browser supporting Web Locks
 over HTTPS (or localhost for development); otherwise setup stops with a notice

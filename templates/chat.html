@@ -565,7 +565,7 @@
             return data;
         }
 
-        static async prepareConversation() {
+        static async prepareConversation(revision) {
             if (!navigator.locks) {
                 const error = new Error('Session setup requires a browser with Web Locks over HTTPS or localhost.');
                 error.code = 'session_setup_unavailable';
@@ -573,6 +573,7 @@
             }
             // Cookie setup is shared by tabs; model generation is never queued here.
             return navigator.locks.request('chatcv-visitor-bootstrap', async () => {
+                if (revision !== AppState.conversationRevision) return;
                 const response = await this.makeAuthenticatedRequest('/chat/conversation', {
                     method: 'POST'
                 });
@@ -820,10 +821,11 @@
                 // Receive the ownership cookie before generation can be cleared.
                 Elements.clearBtn.disabled = true;
                 try {
-                    await APIClient.prepareConversation();
+                    await APIClient.prepareConversation(revision);
                 } finally {
-                    Elements.clearBtn.disabled = false;
+                    Elements.clearBtn.disabled = AppState.isClearing;
                 }
+                if (revision !== AppState.conversationRevision) return;
                 const data = await APIClient.submitQuery(query);
                 loadingIndicator.remove();
                 if (revision !== AppState.conversationRevision) return;

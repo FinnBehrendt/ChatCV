@@ -10,6 +10,7 @@ from pathlib import Path
 from threading import Event, Thread
 from typing import Any
 
+import anyio.to_thread
 import httpx
 import pytest
 import uvicorn
@@ -177,6 +178,26 @@ class PreparationGate:
 @pytest.fixture
 def preparation_gate() -> PreparationGate:
     return PreparationGate()
+
+
+@pytest.fixture
+def worker_gate(monkeypatch: MonkeyPatch) -> PreparationGate:
+    """Pause external threadpool scheduling, not our generation/state logic."""
+    gate = PreparationGate()
+    original = anyio.to_thread.run_sync
+
+    async def schedule(function: Any, *args: Any, **kwargs: Any) -> Any:
+        target = getattr(function, "func", function)
+        if gate.pause_next and getattr(target, "__name__", "") == "get_chat_completion":
+            gate.pause_next = False
+            gate.started.set()
+            assert await asyncio.to_thread(
+                gate.release.wait, 10
+            ), "Worker was not released"
+        return await original(function, *args, **kwargs)
+
+    monkeypatch.setattr(anyio.to_thread, "run_sync", schedule)
+    return gate
 
 
 @pytest.fixture
@@ -408,6 +429,207 @@ def test_summary_uses_candidate_documents_without_changing_either_conversation(
             "/chat", json={"query": "Which professional topic did I mention earlier?"}
         )
         assert follow_up.json()["answer"]["answer"] == f"Topics: {topic}"
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize("browser_page", [True], indirect=True)
+@pytest.mark.parametrize("transition", ["clear", "logout_login"])
+def test_clear_during_bootstrap_does_not_submit_the_old_question(
+    browser_page: Page, preparation_gate: PreparationGate, transition: str
+) -> None:
+    page = browser_page
+    page.locator("#invite-code").fill("shared-code")
+    page.locator("#login-form button").click()
+    expect(page.locator("#login-modal")).to_be_hidden()
+    page.locator("#chat-query").fill("Please remember my professional topic ALPHA.")
+    page.locator("#submit-btn").click()
+    expect(page.locator("#response")).to_contain_text("Assistant: Topics: ALPHA")
+    page.clock.fast_forward(3001)
+    preparation_gate.pause_next = True
+    page.locator("#chat-query").fill("Please remember my professional topic BETA.")
+    page.locator("#submit-btn").click()
+    try:
+        assert preparation_gate.started.wait(timeout=5)
+        other = page.context.new_page()
+        other.goto(page.url)
+        other.add_style_tag(content=".hidden { display: none !important; }")
+        expect(other.locator("#response")).to_contain_text("Assistant: Topics: ALPHA")
+        if transition == "clear":
+            other.locator("#clear-chat").click()
+        else:
+            other.locator("#logout-btn").click()
+            expect(other.locator("#login-modal")).to_be_visible()
+            other.locator("#invite-code").fill("shared-code")
+            other.locator("#login-form button").click()
+            expect(other.locator("#login-modal")).to_be_hidden()
+        expect(other.locator("#response")).to_be_empty()
+        expect(page.locator("#response")).to_be_empty()
+        with page.expect_response(
+            lambda response: response.request.method == "POST"
+            and response.url.endswith("/chat/conversation")
+        ):
+            preparation_gate.release.set()
+        fresh = "Which professional topic did I mention earlier?"
+        page.clock.fast_forward(3001)
+        page.locator("#chat-query").fill(fresh)
+        page.locator("#submit-btn").click()
+        expect(page.locator("#response > div")).to_have_text(
+            [f"You: {fresh}", "Assistant: Topics: "]
+        )
+        assert page.context.request.get(
+            f"{page.url.rstrip('/')}/chat/conversation"
+        ).json() == {
+            "messages": [
+                {"role": "user", "content": fresh},
+                {"role": "assistant", "content": "Topics: "},
+            ]
+        }
+    finally:
+        preparation_gate.release.set()
+
+
+@pytest.mark.parametrize("transition", ["clear", "login", "logout"])
+def test_reset_invalidates_chat_waiting_for_a_worker(
+    visitors: tuple[TestClient, TestClient],
+    worker_gate: PreparationGate,
+    model_server: ModelServer,
+    monkeypatch: MonkeyPatch,
+    transition: str,
+) -> None:
+    visitor, _ = visitors
+    monkeypatch.setattr(
+        auth,
+        "INVITE_CODES",
+        {
+            "shared-code": {"active": True, "company": "Example Company"},
+            "other-code": {"active": True, "company": "Another Company"},
+        },
+    )
+    assert (
+        visitor.post("/auth/login", json={"invite_code": "shared-code"}).status_code
+        == 200
+    )
+    assert (
+        visitor.post(
+            "/chat", json={"query": "Please remember my professional topic ALPHA."}
+        ).status_code
+        == 200
+    )
+    worker_gate.pause_next = True
+    before = model_server.answer_requests
+    with ThreadPoolExecutor(max_workers=1) as requests:
+        pending = requests.submit(
+            visitor.post,
+            "/chat",
+            json={"query": "Please remember my professional topic BETA."},
+        )
+        try:
+            assert worker_gate.started.wait(timeout=5)
+            if transition == "clear":
+                assert visitor.delete("/chat/conversation").status_code == 204
+            elif transition == "login":
+                assert (
+                    visitor.post(
+                        "/auth/login", json={"invite_code": "other-code"}
+                    ).status_code
+                    == 200
+                )
+            else:
+                assert visitor.post("/auth/logout").status_code == 200
+        finally:
+            worker_gate.release.set()
+        rejected = pending.result(timeout=5)
+    assert rejected.status_code == 409
+    assert model_server.answer_requests == before
+    if transition == "logout":
+        assert (
+            visitor.post("/auth/login", json={"invite_code": "shared-code"}).status_code
+            == 200
+        )
+    assert visitor.get("/chat/conversation").json() == {"messages": []}
+    fresh = visitor.post(
+        "/chat", json={"query": "Which professional topic did I mention earlier?"}
+    )
+    assert fresh.status_code == 200
+    assert fresh.json()["answer"]["answer"] == "Topics: "
+
+
+def test_a_queued_generation_already_makes_its_conversation_busy(
+    visitors: tuple[TestClient, TestClient], worker_gate: PreparationGate
+) -> None:
+    visitor_a, visitor_b = visitors
+    assert visitor_a.post("/chat/conversation").status_code == 204
+    worker_gate.pause_next = True
+    with ThreadPoolExecutor(max_workers=1) as requests:
+        pending = requests.submit(
+            visitor_a.post,
+            "/chat",
+            json={"query": "Please remember my professional topic ALPHA."},
+        )
+        try:
+            assert worker_gate.started.wait(timeout=5)
+            refused = visitor_a.post(
+                "/chat", json={"query": "Please remember my professional topic BETA."}
+            )
+            assert refused.status_code == 409
+            assert refused.headers["X-Conversation-Status"] == "busy"
+            assert (
+                visitor_b.post(
+                    "/chat", json={"query": "Describe the candidate."}
+                ).status_code
+                == 200
+            )
+        finally:
+            worker_gate.release.set()
+        assert pending.result(timeout=5).status_code == 200
+    follow_up = visitor_a.post(
+        "/chat", json={"query": "Which professional topic did I mention earlier?"}
+    )
+    assert follow_up.json()["answer"]["answer"] == "Topics: ALPHA"
+
+
+def test_cancelling_a_request_before_worker_start_releases_its_reservation(
+    visitors: tuple[TestClient, TestClient],
+    worker_gate: PreparationGate,
+    model_server: ModelServer,
+) -> None:
+    visitor, _ = visitors
+    assert (
+        visitor.post(
+            "/chat", json={"query": "Please remember my professional topic ALPHA."}
+        ).status_code
+        == 200
+    )
+    before = model_server.answer_requests
+    worker_gate.pause_next = True
+
+    async def cancel_pending() -> None:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=visitor.app),
+            base_url="http://localhost",
+            cookies=visitor.cookies,
+        ) as client:
+            pending = asyncio.create_task(
+                client.post(
+                    "/chat",
+                    json={"query": "Please remember my professional topic BETA."},
+                )
+            )
+            try:
+                assert await asyncio.to_thread(worker_gate.started.wait, 5)
+                pending.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await pending
+            finally:
+                worker_gate.release.set()
+
+    asyncio.run(cancel_pending())
+    assert model_server.answer_requests == before
+    follow_up = visitor.post(
+        "/chat", json={"query": "Which professional topic did I mention earlier?"}
+    )
+    assert follow_up.status_code == 200
+    assert follow_up.json()["answer"]["answer"] == "Topics: ALPHA"
 
 
 def test_anonymous_visitors_keep_independent_follow_up_context(

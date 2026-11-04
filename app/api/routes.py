@@ -281,13 +281,16 @@ async def chat(
     # Measure response time
     start_time = time.time()
 
-    # Call with langsmith_extra parameter
+    # Admission belongs before threadpool scheduling, not inside the worker.
+    generation = None
     try:
+        generation = conversation.reserve_generation()
         result = await run_in_threadpool(
             get_chat_completion,
             query,
             user_metadata=user_metadata,
             conversation=conversation,
+            generation=generation,
         )
     except ConversationBusy as error:
         raise HTTPException(
@@ -301,6 +304,9 @@ async def chat(
         raise HTTPException(
             status_code=409, detail="Conversation was reset; answer discarded."
         ) from error
+    finally:
+        if generation is not None:
+            generation.cancel_if_not_started()
 
     response_time = time.time() - start_time
 

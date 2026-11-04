@@ -2,7 +2,7 @@
 
 import secrets
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from time import monotonic
 
@@ -28,6 +28,39 @@ class ConversationCapacity(Exception):
     """No slot is available for another visitor conversation."""
 
 
+class Generation:
+    """A reserved turn: bind its revision before scheduling, release after work."""
+
+    def __init__(self, revision: int, release: Callable[[], None]) -> None:
+        self._revision = revision
+        self._release = release
+        self._lock = threading.Lock()
+        self._started = False
+        self._finished = False
+
+    @contextmanager
+    def running(self) -> Iterator[int]:
+        with self._lock:
+            if self._finished:
+                raise ConversationReset
+            if self._started:
+                raise ConversationBusy
+            self._started = True
+        try:
+            yield self._revision
+        finally:
+            with self._lock:
+                self._finished = True
+                self._release()
+
+    def cancel_if_not_started(self) -> None:
+        """Cancelled scheduling must not release a still-running inference."""
+        with self._lock:
+            if not self._started and not self._finished:
+                self._finished = True
+                self._release()
+
+
 class Conversation:
     """Own the completed turns of one visitor's conversation."""
 
@@ -42,19 +75,24 @@ class Conversation:
         self._lock = threading.Lock()
         self._generation_lock = threading.Lock()
 
-    @contextmanager
-    def generation(self) -> Iterator[None]:
-        """Reject overlapping inference without blocking reads or resets."""
+    def reserve_generation(self) -> Generation:
+        """Reject overlap and pin the context before waiting for a worker."""
         if not self._generation_lock.acquire(blocking=False):
             raise ConversationBusy
         try:
-            yield
-        finally:
+            revision, _ = self.snapshot()
+            return Generation(revision, self._generation_lock.release)
+        except BaseException:
             self._generation_lock.release()
+            raise
 
-    def snapshot(self) -> tuple[int, list[BaseMessage]]:
+    def snapshot(
+        self, *, expected_revision: int | None = None
+    ) -> tuple[int, list[BaseMessage]]:
         with self._lock:
             self._require_active()
+            if expected_revision is not None and expected_revision != self._revision:
+                raise ConversationReset
             return self._revision, self._messages.copy()
 
     def prepare(self) -> None:
