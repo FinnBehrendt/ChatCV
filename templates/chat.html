@@ -304,6 +304,7 @@
                 const data = await response.json();
 
                 if (response.ok) {
+                    UIManager.resetConversationView();
                     AppState.isAuthenticated = true;
                     AppState.userInfo = data.user;
                     UIManager.hideLoginModal();
@@ -321,22 +322,34 @@
 
         static async logout() {
             try {
-                await fetch('/auth/logout', {
+                const response = await fetch('/auth/logout', {
                     method: 'POST',
                     credentials: 'include'
                 });
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                UIManager.resetConversationView();
                 AppState.isAuthenticated = false;
                 AppState.userInfo = null;
                 UIManager.hideUserInfo();
                 UIManager.showLoginModal();
             } catch (error) {
                 console.error('Logout failed:', error);
+                Elements.chatStatus.textContent = 'Could not log out. Please try again.';
             }
         }
     }
 
     // UI Management
     class UIManager {
+        static resetConversationView() {
+            AppState.conversationRevision += 1;
+            Elements.responseDiv.replaceChildren();
+            Elements.chatStatus.textContent = '';
+            UIManager.setSubmitState(false);
+        }
+
         static showLoginModal() {
             Elements.loginModal.classList.remove('hidden');
         }

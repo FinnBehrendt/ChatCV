@@ -17,7 +17,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.testclient import TestClient
 from playwright.sync_api import Page, expect, sync_playwright
 from pypdf import PdfWriter
-from pytest import MonkeyPatch
+from pytest import FixtureRequest, MonkeyPatch
 from pytest_mock import MockerFixture
 
 import main
@@ -185,8 +185,19 @@ def visitors(
 
 
 @pytest.fixture
-def browser_page(visitors: tuple[TestClient, TestClient]) -> Iterator[Page]:
+def browser_page(
+    visitors: tuple[TestClient, TestClient],
+    request: FixtureRequest,
+    monkeypatch: MonkeyPatch,
+) -> Iterator[Page]:
     """Serve the real page and API on an ephemeral local port for Chromium."""
+    authenticated = getattr(request, "param", False)
+    if authenticated:
+        monkeypatch.setattr(
+            auth,
+            "INVITE_CODES",
+            {"shared-code": {"active": True, "company": "Example Company"}},
+        )
     ready = Event()
 
     class BrowserTestServer(uvicorn.Server):
@@ -217,7 +228,10 @@ def browser_page(visitors: tuple[TestClient, TestClient]) -> Iterator[Page]:
                     page.goto(f"http://127.0.0.1:{port}/")
                     # External Tailwind is not needed to test behavior offline.
                     page.add_style_tag(content=".hidden { display: none !important; }")
-                    expect(page.locator("#login-modal")).to_be_hidden()
+                    if authenticated:
+                        expect(page.locator("#login-modal")).to_be_visible()
+                    else:
+                        expect(page.locator("#login-modal")).to_be_hidden()
                     yield page
                 finally:
                     browser.close()
@@ -478,6 +492,94 @@ def test_failed_clear_keeps_the_visible_and_server_context(browser_page: Page) -
     expect(page.locator("#response")).to_have_text(transcript, use_inner_text=True)
     expect(page.locator("#clear-chat")).to_be_enabled()
     expect(page.locator("#submit-btn")).to_be_enabled()
+
+    page.clock.fast_forward(3001)
+    query.fill("Which professional topic did I mention earlier?")
+    page.locator("#submit-btn").click()
+    expect(page.locator("#response > div")).to_have_count(4)
+    expect(page.locator("#response > div").last).to_have_text(
+        "Assistant: Topics: ALPHA"
+    )
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize("browser_page", [True], indirect=True)
+def test_logout_hides_the_transcript_and_late_answer_before_logging_in_again(
+    browser_page: Page, model_server: ModelServer
+) -> None:
+    page = browser_page
+    page.locator("#invite-code").fill("shared-code")
+    page.locator("#login-form button").click()
+    expect(page.locator("#login-modal")).to_be_hidden()
+    query = page.locator("#chat-query")
+    query.fill("Please remember my professional topic ALPHA.")
+    page.locator("#submit-btn").click()
+    expect(page.locator("#response")).to_contain_text("Assistant: Topics: ALPHA")
+
+    page.clock.fast_forward(3001)
+    model_server.pause_next_answer = True
+    query.fill("Which professional topic did I mention earlier?")
+    with page.expect_request(
+        lambda request: request.method == "POST" and request.url.endswith("/chat")
+    ):
+        page.locator("#submit-btn").click()
+    try:
+        assert model_server.started.wait(timeout=5), "Model request never started"
+        with page.expect_response("**/auth/logout") as logged_out:
+            page.locator("#logout-btn").click()
+        assert logged_out.value.status == 200
+        expect(page.locator("#login-modal")).to_be_visible()
+        expect(page.locator("#response")).to_be_empty()
+        with page.expect_response("**/chat") as pending:
+            model_server.release.set()
+        assert pending.value.status == 409
+        expect(page.locator("#response")).to_be_empty()
+        expect(page.locator("#submit-btn")).to_be_enabled()
+    finally:
+        model_server.release.set()
+
+    page.locator("#invite-code").fill("shared-code")
+    page.locator("#login-form button").click()
+    expect(page.locator("#login-modal")).to_be_hidden()
+    page.clock.fast_forward(3001)
+    query.fill("Which professional topic did I mention earlier?")
+    page.locator("#submit-btn").click()
+    expect(page.locator("#response")).to_contain_text("Assistant: Topics:")
+    expect(page.locator("#response > div")).to_have_count(2)
+    expect(page.locator("#response")).not_to_contain_text("ALPHA")
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize("browser_page", [True], indirect=True)
+@pytest.mark.parametrize("failure", ["http", "network"])
+def test_failed_logout_keeps_the_authenticated_conversation(
+    browser_page: Page, failure: str
+) -> None:
+    page = browser_page
+    page.locator("#invite-code").fill("shared-code")
+    page.locator("#login-form button").click()
+    expect(page.locator("#login-modal")).to_be_hidden()
+    query = page.locator("#chat-query")
+    query.fill("Please remember my professional topic ALPHA.")
+    page.locator("#submit-btn").click()
+    expect(page.locator("#response")).to_contain_text("Assistant: Topics: ALPHA")
+    transcript = page.locator("#response").inner_text()
+
+    page.route(
+        "**/auth/logout",
+        lambda route: (
+            route.abort()
+            if failure == "network"
+            else route.fulfill(status=503, json={"detail": "Temporarily unavailable"})
+        ),
+    )
+    page.locator("#logout-btn").click()
+    expect(page.locator("#chat-status")).to_have_text(
+        "Could not log out. Please try again."
+    )
+    expect(page.locator("#login-modal")).to_be_hidden()
+    expect(page.locator("#user-info")).to_be_visible()
+    expect(page.locator("#response")).to_have_text(transcript, use_inner_text=True)
 
     page.clock.fast_forward(3001)
     query.fill("Which professional topic did I mention earlier?")
