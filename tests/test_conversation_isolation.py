@@ -25,7 +25,13 @@ import main
 from app.api import routes
 from app.auth import auth
 from app.config import AppConfig, DataPaths, EmbeddingConfig, LLMConfig
-from app.modules import conversations, guardrails, model_provider, rag_pipeline
+from app.modules import (
+    conversations,
+    guardrails,
+    model_provider,
+    rag_pipeline,
+    summary_pipeline,
+)
 from app.utils import analytics
 
 
@@ -52,7 +58,12 @@ def respond_as_model(request: httpx.Request) -> httpx.Response:
         raise AssertionError(f"Unexpected model request: {request.url.path}")
 
     messages = body["messages"]
-    if not any(message["role"] == "system" for message in messages):
+    if any(
+        message["content"].startswith("Summarize candidate documents for")
+        for message in messages
+    ):
+        answer = "Example Candidate develops Python software."
+    elif not any(message["role"] == "system" for message in messages):
         # History-aware retrieval rewrites the query before the answer request.
         answer = "candidate professional skills"
     else:
@@ -87,10 +98,23 @@ class ModelServer:
         self.answer_requests = 0
         self.fail_answers = False
         self.answer_override: str | None = None
+        self.summary_inputs: list[list[dict[str, Any]]] = []
+        self.fail_summaries = False
         self.started = Event()
         self.release = Event()
 
     def respond(self, request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/chat/completions":
+            messages = json.loads(request.content)["messages"]
+            if any(
+                message["content"].startswith("Summarize candidate documents for")
+                for message in messages
+            ):
+                self.summary_inputs.append(messages)
+                if self.fail_summaries:
+                    return httpx.Response(
+                        400, json={"error": {"message": "Synthetic summary failure"}}
+                    )
         is_answer = request.url.path == "/v1/chat/completions" and any(
             message["role"] == "system"
             for message in json.loads(request.content)["messages"]
@@ -208,9 +232,12 @@ def visitors(
             analytics_log_path=str(tmp_path / "analytics.log"),
         ),
         chat_system_prompt="Answer about {candidate_name}. Context: {{context}}",
+        summary_prompt_template="Summarize candidate documents for {candidate_name}: {{context}}",
     )
     settings.candidate.name = "Example Candidate"
     monkeypatch.setattr(rag_pipeline, "config", settings)
+    monkeypatch.setattr(summary_pipeline, "config", settings)
+    monkeypatch.setattr(summary_pipeline.SummaryGenerator, "_instance", None)
     monkeypatch.setattr(analytics, "config", settings)
     monkeypatch.setattr(auth, "config", settings)
     monkeypatch.setattr(auth, "INVITE_CODES", {})
@@ -327,6 +354,60 @@ def browser_page(
             server.should_exit = True
             thread.join(timeout=5)
             assert not thread.is_alive(), "Browser test server did not stop"
+
+
+@pytest.mark.parametrize("fail_summary", [False, True])
+def test_summary_uses_candidate_documents_without_changing_either_conversation(
+    visitors: tuple[TestClient, TestClient],
+    model_server: ModelServer,
+    fail_summary: bool,
+) -> None:
+    visitor_a, visitor_b = visitors
+    for visitor, topic in ((visitor_a, "ALPHA"), (visitor_b, "BETA")):
+        assert (
+            visitor.post(
+                "/chat",
+                json={"query": f"Please remember my professional topic {topic}."},
+            ).status_code
+            == 200
+        )
+
+    model_server.fail_summaries = fail_summary
+    result = visitor_a.post("/summary")
+    assert result.status_code == 200
+    assert result.json()["skills"] == []
+    if fail_summary:
+        assert (
+            result.json()["summary_md"]
+            == "Unable to generate summary. Please try again."
+        )
+        assert "error" in result.json()
+    else:
+        assert (
+            result.json()["summary_md"] == "Example Candidate develops Python software."
+        )
+        assert result.json()["style"] == "bullet"
+    assert model_server.summary_inputs, "No real summary model request was made"
+    for messages in model_server.summary_inputs:
+        prompt = " ".join(message["content"] for message in messages)
+        assert "Example Candidate develops Python software." in prompt
+        assert "ALPHA" not in prompt
+        assert "BETA" not in prompt
+
+    for visitor, topic in ((visitor_a, "ALPHA"), (visitor_b, "BETA")):
+        assert visitor.get("/chat/conversation").json() == {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": f"Please remember my professional topic {topic}.",
+                },
+                {"role": "assistant", "content": f"Topics: {topic}"},
+            ]
+        }
+        follow_up = visitor.post(
+            "/chat", json={"query": "Which professional topic did I mention earlier?"}
+        )
+        assert follow_up.json()["answer"]["answer"] == f"Topics: {topic}"
 
 
 def test_anonymous_visitors_keep_independent_follow_up_context(
@@ -926,6 +1007,43 @@ def test_clear_discards_an_in_flight_answer(
     )
     assert follow_up.status_code == 200
     assert follow_up.json()["answer"]["answer"] == "Topics: "
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize("fail_summary", [False, True])
+def test_summary_button_keeps_its_result_separate_from_chat_and_draft(
+    browser_page: Page, model_server: ModelServer, fail_summary: bool
+) -> None:
+    page = browser_page
+    query = page.locator("#chat-query")
+    query.fill("Please remember my professional topic ALPHA.")
+    page.locator("#submit-btn").click()
+    expect(page.locator("#response")).to_contain_text("Assistant: Topics: ALPHA")
+    transcript = [
+        "You: Please remember my professional topic ALPHA.",
+        "Assistant: Topics: ALPHA",
+    ]
+    draft = "An unsent question about the candidate's skills."
+    query.fill(draft)
+    model_server.fail_summaries = fail_summary
+    page.locator("#summary-button").click()
+    expected = (
+        "Unable to generate summary. Please try again."
+        if fail_summary
+        else "Example Candidate develops Python software."
+    )
+    expect(page.locator("#summary-response")).to_contain_text(expected)
+    expect(page.locator("#response > div")).to_have_text(transcript)
+    expect(query).to_have_value(draft)
+    page.reload()
+    page.add_style_tag(content=".hidden { display: none !important; }")
+    expect(page.locator("#response > div")).to_have_text(transcript)
+    query.fill("Which professional topic did I mention earlier?")
+    page.locator("#submit-btn").click()
+    expect(page.locator("#response > div")).to_have_count(4)
+    expect(page.locator("#response > div").last).to_have_text(
+        "Assistant: Topics: ALPHA"
+    )
 
 
 @pytest.mark.browser

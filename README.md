@@ -373,6 +373,12 @@ successful login/logout reset conversation context. Restarts lose that context;
 resets do not delete external provider records or diagnostic traces. Durable
 storage and shared multi-worker state remain separate follow-ups.
 
+Pixi and container entrypoints explicitly select `--workers 1`. Startup rejects
+other worker counts in `WEB_CONCURRENCY`, `UVICORN_WORKERS`, recognized CLI worker
+flags and `GUNICORN_CMD_ARGS`. Keep ASGI lifespan enabled. These are practical
+configuration checks, not detection of independently launched replicas: run only
+one application instance. Distributed state remains out of scope.
+
 Model context and the displayed transcript retain only the latest 20 completed
 question/answer pairs. Set `CONVERSATION_MAX_TURNS` to a positive integer in
 `.env` to change this window; restart the app after changing it.
