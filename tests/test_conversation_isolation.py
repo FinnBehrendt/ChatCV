@@ -270,6 +270,111 @@ def test_clear_resets_only_the_current_visitors_context(
     assert answers == ["Topics: ", "Topics: BETA"]
 
 
+@pytest.mark.parametrize(
+    ("login_code", "expected_status", "expected_topic"),
+    [
+        ("shared-code", 200, "Topics: "),
+        ("different-code", 200, "Topics: "),
+        ("invalid-code", 401, "Topics: ALPHA"),
+    ],
+)
+def test_only_successful_login_resets_the_visitors_conversation(
+    visitors: tuple[TestClient, TestClient],
+    monkeypatch: MonkeyPatch,
+    login_code: str,
+    expected_status: int,
+    expected_topic: str,
+) -> None:
+    visitor_a, visitor_b = visitors
+    monkeypatch.setattr(
+        auth,
+        "INVITE_CODES",
+        {
+            "shared-code": {"active": True, "company": "Example Company"},
+            "different-code": {"active": True, "company": "Other Company"},
+        },
+    )
+    for visitor, topic in ((visitor_a, "ALPHA"), (visitor_b, "BETA")):
+        login = visitor.post("/auth/login", json={"invite_code": "shared-code"})
+        assert login.status_code == 200
+        seeded = visitor.post(
+            "/chat", json={"query": f"Please remember my professional topic {topic}."}
+        )
+        assert seeded.status_code == 200
+        assert seeded.json()["answer"]["answer"] == f"Topics: {topic}"
+
+    changed = visitor_a.post("/auth/login", json={"invite_code": login_code})
+    assert changed.status_code == expected_status
+
+    answers = []
+    for visitor in (visitor_a, visitor_b):
+        response = visitor.post(
+            "/chat", json={"query": "Which professional topic did I mention earlier?"}
+        )
+        assert response.status_code == 200
+        answers.append(response.json()["answer"]["answer"])
+
+    assert answers == [expected_topic, "Topics: BETA"]
+
+
+@pytest.mark.parametrize("authenticated", [False, True])
+def test_logout_resets_only_the_visitors_context_and_discards_a_pending_answer(
+    visitors: tuple[TestClient, TestClient],
+    model_server: ModelServer,
+    monkeypatch: MonkeyPatch,
+    authenticated: bool,
+) -> None:
+    visitor_a, visitor_b = visitors
+    if authenticated:
+        monkeypatch.setattr(
+            auth,
+            "INVITE_CODES",
+            {"shared-code": {"active": True, "company": "Example Company"}},
+        )
+    for visitor, topic in ((visitor_a, "ALPHA"), (visitor_b, "BETA")):
+        if authenticated:
+            login = visitor.post("/auth/login", json={"invite_code": "shared-code"})
+            assert login.status_code == 200
+        seeded = visitor.post(
+            "/chat", json={"query": f"Please remember my professional topic {topic}."}
+        )
+        assert seeded.status_code == 200
+        assert seeded.json()["answer"]["answer"] == f"Topics: {topic}"
+
+    model_server.pause_next_answer = True
+    with ThreadPoolExecutor(max_workers=2) as requests:
+        pending = requests.submit(
+            visitor_a.post,
+            "/chat",
+            json={"query": "Which professional topic did I mention earlier?"},
+        )
+        try:
+            assert model_server.started.wait(timeout=5), "Model request never started"
+            logout = requests.submit(visitor_a.post, "/auth/logout")
+            assert logout.result(timeout=2).status_code == 200
+        finally:
+            model_server.release.set()
+        stale = pending.result(timeout=5)
+
+    assert stale.status_code == 409
+    own_follow_up = visitor_a.post(
+        "/chat", json={"query": "Which professional topic did I mention earlier?"}
+    )
+    if authenticated:
+        assert own_follow_up.status_code == 401
+        status = visitor_a.get("/auth/status")
+        assert status.json()["authenticated"] is False
+    else:
+        assert own_follow_up.status_code == 200
+        assert own_follow_up.json()["answer"]["answer"] == "Topics: "
+
+    other_follow_up = visitor_b.post(
+        "/chat", json={"query": "Which professional topic did I mention earlier?"}
+    )
+    assert other_follow_up.status_code == 200
+    assert other_follow_up.json()["answer"]["answer"] == "Topics: BETA"
+
+
 def test_clear_discards_an_in_flight_answer(
     visitors: tuple[TestClient, TestClient], model_server: ModelServer
 ) -> None:

@@ -33,7 +33,10 @@ advanced_analytics = AdvancedAnalytics()
 
 @router.post("/auth/login")
 async def login(
-    request: Request, response: Response, invite_code: str = Body(..., embed=True)
+    request: Request,
+    response: Response,
+    conversations: Annotated[ConversationStore, Depends(get_conversation_store)],
+    invite_code: str = Body(..., embed=True),
 ):
     """
     Authenticate user with an invite code.
@@ -48,6 +51,8 @@ async def login(
         log_login_event(invite_code, user_info.get("company", "Unknown"), False)
         api_logger.warning("Login failed: invalid invite code")
         raise HTTPException(status_code=401, detail="Invalid invite code")
+
+    conversations.clear(request.cookies.get("visitor_session"))
 
     log_login_event(invite_code, user_info.get("company", "Unknown"), True)
     api_logger.info(
@@ -86,12 +91,17 @@ async def login(
 
 
 @router.post("/auth/logout")
-async def logout(request: Request, response: Response):
+async def logout(
+    request: Request,
+    response: Response,
+    conversations: Annotated[ConversationStore, Depends(get_conversation_store)],
+):
     """
     Log out the current user by deleting the session cookie.
 
     Ends the chat session in LangSmith and logs the logout event.
     """
+    conversations.clear(request.cookies.get("visitor_session"))
     session_token = request.cookies.get("session_token")
     if session_token:
         # End chat session in LangSmith
