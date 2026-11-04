@@ -55,6 +55,7 @@ async def index(request: Request) -> HTMLResponse:
             "candidate_linkedin": config.candidate.linkedin,
             "candidate_github": config.candidate.github,
             "cv_path": "/resume",
+            "conversation_max_turns": config.conversation_max_turns,
         },
     )
 

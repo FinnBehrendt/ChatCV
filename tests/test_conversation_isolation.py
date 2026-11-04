@@ -25,7 +25,7 @@ import main
 from app.api import routes
 from app.auth import auth
 from app.config import AppConfig, DataPaths, EmbeddingConfig, LLMConfig
-from app.modules import guardrails, model_provider, rag_pipeline
+from app.modules import conversations, guardrails, model_provider, rag_pipeline
 from app.utils import analytics
 
 
@@ -84,10 +84,23 @@ class ModelServer:
 
     def __init__(self) -> None:
         self.pause_next_answer = False
+        self.answer_requests = 0
+        self.fail_answers = False
+        self.answer_override: str | None = None
         self.started = Event()
         self.release = Event()
 
     def respond(self, request: httpx.Request) -> httpx.Response:
+        is_answer = request.url.path == "/v1/chat/completions" and any(
+            message["role"] == "system"
+            for message in json.loads(request.content)["messages"]
+        )
+        if is_answer:
+            self.answer_requests += 1
+            if self.fail_answers:
+                return httpx.Response(
+                    400, json={"error": {"message": "Synthetic model failure"}}
+                )
         if self.pause_next_answer and request.url.path == "/v1/chat/completions":
             messages = json.loads(request.content)["messages"]
             if any(message["role"] == "system" for message in messages):
@@ -95,12 +108,37 @@ class ModelServer:
                 self.started.set()
                 if not self.release.wait(timeout=10):
                     raise AssertionError("Test did not release the model response")
-        return respond_as_model(request)
+        response = respond_as_model(request)
+        if is_answer and self.answer_override is not None:
+            body = response.json()
+            body["choices"][0]["message"]["content"] = self.answer_override
+            return httpx.Response(200, json=body)
+        return response
 
 
 @pytest.fixture
 def model_server() -> ModelServer:
     return ModelServer()
+
+
+class Clock:
+    """Advance only the application's elapsed-time source, without real sleeps."""
+
+    def __init__(self) -> None:
+        self.seconds = 0.0
+
+    def __call__(self) -> float:
+        return self.seconds
+
+    def advance(self, seconds: float) -> None:
+        self.seconds += seconds
+
+
+@pytest.fixture
+def clock(monkeypatch: MonkeyPatch) -> Clock:
+    source = Clock()
+    monkeypatch.setattr(conversations, "monotonic", source)
+    return source
 
 
 class PreparationGate:
@@ -118,12 +156,24 @@ def preparation_gate() -> PreparationGate:
 
 
 @pytest.fixture
+def conversation_max_turns(request: FixtureRequest) -> int:
+    return getattr(request, "param", 20)
+
+
+@pytest.fixture
+def conversation_capacity(request: FixtureRequest) -> int:
+    return getattr(request, "param", 100)
+
+
+@pytest.fixture
 def visitors(
     monkeypatch: MonkeyPatch,
     mocker: MockerFixture,
     tmp_path: Path,
     model_server: ModelServer,
     preparation_gate: PreparationGate,
+    conversation_max_turns: int,
+    conversation_capacity: int,
 ) -> Iterator[tuple[TestClient, TestClient]]:
     """Keep real routing, RAG, document loading and a disposable Chroma index."""
     monkeypatch.setenv("INVITE_CODES", "{}")
@@ -139,6 +189,8 @@ def visitors(
         OPENAI_API_KEY=None,
         LLM_API_KEY=None,
         EMBEDDING_API_KEY=None,
+        conversation_max_turns=conversation_max_turns,
+        conversation_capacity=conversation_capacity,
         llm=LLMConfig(
             provider="openai_compatible",
             model="synthetic-chat",
@@ -164,6 +216,7 @@ def visitors(
     monkeypatch.setattr(auth, "INVITE_CODES", {})
     monkeypatch.setattr(auth, "active_sessions", {})
     monkeypatch.setattr(main, "config", settings)
+    monkeypatch.setattr(conversations, "config", settings)
     monkeypatch.setattr(rag_pipeline.ChatRAGPipeline, "_instance", None)
     monkeypatch.setattr(routes, "advanced_analytics", analytics.AdvancedAnalytics())
 
@@ -171,6 +224,8 @@ def visitors(
         """No external Guardrails models; normal local input checks still run."""
 
         def validate(self, text: str) -> str:
+            if "UNSAFE_SYNTHETIC_OUTPUT" in text:
+                raise ValueError("Synthetic external content guard rejected output")
             return text
 
     monkeypatch.setattr(guardrails, "GUARDRAILS_AVAILABLE", False)
@@ -291,6 +346,332 @@ def test_anonymous_visitors_keep_independent_follow_up_context(
         answers.append(data["answer"]["answer"])
 
     assert answers == ["Topics: ALPHA", "Topics: BETA", "Topics: ALPHA", "Topics: BETA"]
+
+
+@pytest.mark.parametrize(
+    "failure", ["invalid_input", "provider", "rejected_output", "empty_output"]
+)
+def test_failed_turns_preserve_successful_context_and_allow_a_follow_up(
+    visitors: tuple[TestClient, TestClient], model_server: ModelServer, failure: str
+) -> None:
+    visitor_a, visitor_b = visitors
+    for visitor, topic in ((visitor_a, "ALPHA"), (visitor_b, "BETA")):
+        assert (
+            visitor.post(
+                "/chat",
+                json={"query": f"Please remember my professional topic {topic}."},
+            ).status_code
+            == 200
+        )
+    model_server.fail_answers = failure == "provider"
+    if failure == "rejected_output":
+        model_server.answer_override = "UNSAFE_SYNTHETIC_OUTPUT"
+    elif failure == "empty_output":
+        model_server.answer_override = "   "
+    question = (
+        "Discuss topic BETA and the weather."
+        if failure == "invalid_input"
+        else "Please remember my professional topic BETA."
+    )
+    failed = visitor_a.post("/chat", json={"query": question})
+    assert failed.status_code == 200  # Preserve the existing error response shape.
+    model_server.fail_answers = False
+    model_server.answer_override = None
+
+    for visitor, topic in ((visitor_a, "ALPHA"), (visitor_b, "BETA")):
+        assert visitor.get("/chat/conversation").json() == {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": f"Please remember my professional topic {topic}.",
+                },
+                {"role": "assistant", "content": f"Topics: {topic}"},
+            ]
+        }
+        follow_up = visitor.post(
+            "/chat", json={"query": "Which professional topic did I mention earlier?"}
+        )
+        assert follow_up.status_code == 200
+        assert follow_up.json()["answer"]["answer"] == f"Topics: {topic}"
+
+
+@pytest.mark.parametrize("configured_limit", [None, 2])
+def test_only_latest_completed_turns_remain_in_transcript_and_model_context(
+    visitors: tuple[TestClient, TestClient],
+    monkeypatch: MonkeyPatch,
+    configured_limit: int | None,
+) -> None:
+    visitor, _ = visitors
+    if configured_limit is not None:
+        monkeypatch.setattr(main.config, "conversation_max_turns", configured_limit)
+    limit = configured_limit if configured_limit is not None else 20
+    assert (
+        visitor.post(
+            "/chat", json={"query": "Please remember my professional topic ALPHA."}
+        ).status_code
+        == 200
+    )
+    for index in range(limit):
+        assert (
+            visitor.post(
+                "/chat",
+                json={"query": f"Describe the candidate's skills, request {index}."},
+            ).status_code
+            == 200
+        )
+
+    follow_up = "Which professional topic did I mention earlier?"
+    response = visitor.post("/chat", json={"query": follow_up})
+    assert response.status_code == 200
+    assert response.json()["answer"]["answer"] == "Topics: "
+    transcript = visitor.get("/chat/conversation").json()["messages"]
+    assert len(transcript) == 2 * limit
+    assert transcript[0]["content"] == "Describe the candidate's skills, request 1."
+    assert transcript[-2:] == [
+        {"role": "user", "content": follow_up},
+        {"role": "assistant", "content": "Topics: "},
+    ]
+
+
+@pytest.mark.parametrize("configured_minutes", [None, 1])
+@pytest.mark.parametrize("submission_path", ["/chat", "/chat/conversation"])
+def test_idle_context_expires_despite_passive_reads_and_requires_resubmission(
+    visitors: tuple[TestClient, TestClient],
+    clock: Clock,
+    model_server: ModelServer,
+    monkeypatch: MonkeyPatch,
+    configured_minutes: int | None,
+    submission_path: str,
+) -> None:
+    visitor_a, visitor_b = visitors
+    if configured_minutes is not None:
+        monkeypatch.setattr(
+            main.config, "conversation_idle_minutes", configured_minutes
+        )
+    idle_seconds = 60 * (configured_minutes if configured_minutes is not None else 30)
+    assert (
+        visitor_a.post(
+            "/chat", json={"query": "Please remember my professional topic ALPHA."}
+        ).status_code
+        == 200
+    )
+    clock.advance(idle_seconds / 2)
+    assert len(visitor_a.get("/chat/conversation").json()["messages"]) == 2
+    assert visitor_a.post("/chat/conversation").status_code == 204
+    assert (
+        visitor_b.post(
+            "/chat", json={"query": "Please remember my professional topic BETA."}
+        ).status_code
+        == 200
+    )
+    clock.advance(idle_seconds / 2)
+
+    expired = visitor_a.get("/chat/conversation")
+    assert expired.status_code == 200
+    assert expired.json() == {"messages": []}
+    assert expired.headers["X-Conversation-Status"] == "expired"
+    before = model_server.answer_requests
+    rejected = visitor_a.post(
+        submission_path,
+        json={"query": "Which professional topic did I mention earlier?"},
+    )
+    assert rejected.status_code == 409
+    assert rejected.headers["X-Conversation-Status"] == "expired"
+    assert model_server.answer_requests == before
+    assert visitor_a.get("/chat/conversation").json() == {"messages": []}
+
+    for visitor, expected in ((visitor_a, "Topics: "), (visitor_b, "Topics: BETA")):
+        retry = visitor.post(
+            "/chat", json={"query": "Which professional topic did I mention earlier?"}
+        )
+        assert retry.status_code == 200
+        assert retry.json()["answer"]["answer"] == expected
+
+
+@pytest.mark.parametrize("configured_limit", [None, 2])
+@pytest.mark.parametrize("submission_path", ["/chat", "/chat/conversation"])
+def test_capacity_rejects_new_visitors_without_evicting_active_context(
+    visitors: tuple[TestClient, TestClient],
+    monkeypatch: MonkeyPatch,
+    model_server: ModelServer,
+    configured_limit: int | None,
+    submission_path: str,
+) -> None:
+    visitor_a, newcomer = visitors
+    if configured_limit is not None:
+        monkeypatch.setattr(main.config, "conversation_capacity", configured_limit)
+    limit = configured_limit if configured_limit is not None else 100
+    assert (
+        visitor_a.post(
+            "/chat", json={"query": "Please remember my professional topic ALPHA."}
+        ).status_code
+        == 200
+    )
+    for _ in range(limit - 1):
+        with TestClient(visitor_a.app, base_url="http://localhost") as other:
+            assert other.post("/chat/conversation").status_code == 204
+
+    before = model_server.answer_requests
+    refused = newcomer.post(submission_path, json={"query": "Describe the candidate."})
+    assert refused.status_code == 503
+    assert refused.headers["X-Conversation-Status"] == "capacity"
+    assert model_server.answer_requests == before
+    assert "visitor_session" not in newcomer.cookies
+    follow_up = visitor_a.post(
+        "/chat", json={"query": "Which professional topic did I mention earlier?"}
+    )
+    assert follow_up.status_code == 200
+    assert follow_up.json()["answer"]["answer"] == "Topics: ALPHA"
+
+
+def test_capacity_reclaims_expired_context_but_keeps_active_visitors(
+    visitors: tuple[TestClient, TestClient], clock: Clock, monkeypatch: MonkeyPatch
+) -> None:
+    abandoned, newcomer = visitors
+    monkeypatch.setattr(main.config, "conversation_capacity", 2)
+    assert (
+        abandoned.post(
+            "/chat", json={"query": "Please remember my professional topic ALPHA."}
+        ).status_code
+        == 200
+    )
+    clock.advance(900)
+    with TestClient(abandoned.app, base_url="http://localhost") as active:
+        assert (
+            active.post(
+                "/chat", json={"query": "Please remember my professional topic BETA."}
+            ).status_code
+            == 200
+        )
+        clock.advance(900)
+        admitted = newcomer.post("/chat", json={"query": "Describe the candidate."})
+        assert admitted.status_code == 200
+        assert admitted.json()["answer"]["answer"] == "Topics: "
+        retained = active.post(
+            "/chat", json={"query": "Which professional topic did I mention earlier?"}
+        )
+        assert retained.json()["answer"]["answer"] == "Topics: BETA"
+
+    expired = abandoned.get("/chat/conversation")
+    assert expired.json() == {"messages": []}
+    assert expired.headers["X-Conversation-Status"] == "expired"
+    rejected = abandoned.post(
+        "/chat", json={"query": "Which professional topic did I mention earlier?"}
+    )
+    assert rejected.status_code == 409
+    assert rejected.headers["X-Conversation-Status"] == "expired"
+    # Forget the reclaimed identity without retaining an unbounded tombstone map.
+    assert "visitor_session" not in abandoned.cookies
+    assert abandoned.post("/chat/conversation").status_code == 503
+    clock.advance(1800)
+    fresh = abandoned.post(
+        "/chat", json={"query": "Which professional topic did I mention earlier?"}
+    )
+    assert fresh.status_code == 200
+    assert fresh.json()["answer"]["answer"] == "Topics: "
+
+
+def test_reclaiming_a_slot_invalidates_its_still_running_generation(
+    visitors: tuple[TestClient, TestClient],
+    clock: Clock,
+    monkeypatch: MonkeyPatch,
+    model_server: ModelServer,
+) -> None:
+    old_visitor, newcomer = visitors
+    monkeypatch.setattr(main.config, "conversation_capacity", 1)
+    assert (
+        old_visitor.post(
+            "/chat", json={"query": "Please remember my professional topic ALPHA."}
+        ).status_code
+        == 200
+    )
+    model_server.pause_next_answer = True
+    with ThreadPoolExecutor(max_workers=1) as requests:
+        pending = requests.submit(
+            old_visitor.post,
+            "/chat",
+            json={"query": "Please remember my professional topic BETA."},
+        )
+        try:
+            assert model_server.started.wait(timeout=5), "Model request never started"
+            clock.advance(1800)
+            admitted = newcomer.post("/chat", json={"query": "Describe the candidate."})
+            assert admitted.status_code == 200
+        finally:
+            model_server.release.set()
+        stale = pending.result(timeout=5)
+
+    assert stale.status_code == 409
+    assert stale.headers["X-Conversation-Status"] == "expired"
+    assert old_visitor.get("/chat/conversation").json() == {"messages": []}
+    retained = newcomer.get("/chat/conversation").json()["messages"]
+    assert retained == [
+        {"role": "user", "content": "Describe the candidate."},
+        {"role": "assistant", "content": "Topics: "},
+    ]
+
+
+@pytest.mark.parametrize("reset_action", ["clear", "login", "logout"])
+def test_explicit_reset_forgets_a_reclaimed_visitor_identity(
+    visitors: tuple[TestClient, TestClient],
+    clock: Clock,
+    monkeypatch: MonkeyPatch,
+    reset_action: str,
+) -> None:
+    old_visitor, newcomer = visitors
+    monkeypatch.setattr(main.config, "conversation_capacity", 1)
+    assert old_visitor.post("/chat/conversation").status_code == 204
+    clock.advance(1800)
+    assert newcomer.post("/chat/conversation").status_code == 204
+    if reset_action == "login":
+        monkeypatch.setattr(
+            auth,
+            "INVITE_CODES",
+            {"shared-code": {"active": True, "company": "Example Company"}},
+        )
+        reset = old_visitor.post("/auth/login", json={"invite_code": "shared-code"})
+    elif reset_action == "logout":
+        reset = old_visitor.post("/auth/logout")
+    else:
+        reset = old_visitor.delete("/chat/conversation")
+    assert reset.status_code in (200, 204)
+    assert "visitor_session" not in old_visitor.cookies
+    # An explicit reset already acknowledges the old context's removal.
+    assert old_visitor.post("/chat/conversation").status_code == 503
+
+
+def test_expiration_discards_a_generation_that_finishes_after_the_idle_deadline(
+    visitors: tuple[TestClient, TestClient], clock: Clock, model_server: ModelServer
+) -> None:
+    visitor, _ = visitors
+    assert (
+        visitor.post(
+            "/chat", json={"query": "Please remember my professional topic ALPHA."}
+        ).status_code
+        == 200
+    )
+    model_server.pause_next_answer = True
+    with ThreadPoolExecutor(max_workers=1) as requests:
+        pending = requests.submit(
+            visitor.post,
+            "/chat",
+            json={"query": "Please remember my professional topic BETA."},
+        )
+        try:
+            assert model_server.started.wait(timeout=5), "Model request never started"
+            clock.advance(1800)
+        finally:
+            model_server.release.set()
+        stale = pending.result(timeout=5)
+
+    assert stale.status_code == 409
+    assert stale.headers["X-Conversation-Status"] == "expired"
+    assert visitor.get("/chat/conversation").json() == {"messages": []}
+    retry = visitor.post(
+        "/chat", json={"query": "Which professional topic did I mention earlier?"}
+    )
+    assert retry.status_code == 200
+    assert retry.json()["answer"]["answer"] == "Topics: "
 
 
 @pytest.mark.parametrize("authenticated", [False, True])
@@ -545,6 +926,186 @@ def test_clear_discards_an_in_flight_answer(
     )
     assert follow_up.status_code == 200
     assert follow_up.json()["answer"]["answer"] == "Topics: "
+
+
+@pytest.mark.browser
+def test_local_input_validation_does_not_add_an_assistant_turn(
+    browser_page: Page, model_server: ModelServer
+) -> None:
+    page = browser_page
+    page.locator("#chat-query").fill("Please remember my professional topic ALPHA.")
+    page.locator("#submit-btn").click()
+    expect(page.locator("#response")).to_contain_text("Assistant: Topics: ALPHA")
+    before = model_server.answer_requests
+    page.locator("#chat-query").fill("   ")
+    page.locator("#submit-btn").click()
+    expect(page.locator("#chat-status")).to_have_text("Query cannot be empty")
+    expect(page.locator("#response > div")).to_have_text(
+        [
+            "You: Please remember my professional topic ALPHA.",
+            "Assistant: Topics: ALPHA",
+        ]
+    )
+    expect(page.locator("#chat-query")).to_have_value("   ")
+    assert model_server.answer_requests == before
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize("failure", ["provider", "rejected_output", "transport"])
+def test_failed_generation_is_a_notice_not_a_visible_or_stored_turn(
+    browser_page: Page, model_server: ModelServer, failure: str
+) -> None:
+    page = browser_page
+    query = page.locator("#chat-query")
+    query.fill("Please remember my professional topic ALPHA.")
+    page.locator("#submit-btn").click()
+    expect(page.locator("#response")).to_contain_text("Assistant: Topics: ALPHA")
+    transcript = [
+        "You: Please remember my professional topic ALPHA.",
+        "Assistant: Topics: ALPHA",
+    ]
+    model_server.fail_answers = failure == "provider"
+    if failure == "rejected_output":
+        model_server.answer_override = "UNSAFE_SYNTHETIC_OUTPUT"
+    if failure == "transport":
+        page.route("**/chat", lambda route: route.abort(), times=1)
+    page.clock.fast_forward(3001)
+    draft = "Please remember my professional topic BETA."
+    query.fill(draft)
+    page.locator("#submit-btn").click()
+    expected_notice = (
+        "An error occurred. Please try again."
+        if failure == "transport"
+        else "I'm sorry, but I cannot provide a response to that query."
+    )
+    expect(page.locator("#chat-status")).to_have_text(expected_notice)
+    expect(page.locator("#response > div")).to_have_text(transcript)
+    expect(query).to_have_value(draft)
+    expect(page.locator("#submit-btn")).to_be_enabled()
+    model_server.fail_answers = False
+    model_server.answer_override = None
+    page.reload()
+    page.add_style_tag(content=".hidden { display: none !important; }")
+    expect(page.locator("#response > div")).to_have_text(transcript)
+    query.fill("Which professional topic did I mention earlier?")
+    page.locator("#submit-btn").click()
+    expect(page.locator("#response > div")).to_have_count(4)
+    expect(page.locator("#response > div").last).to_have_text(
+        "Assistant: Topics: ALPHA"
+    )
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize("conversation_capacity", [2], indirect=True)
+def test_capacity_notice_preserves_the_draft_until_a_slot_is_available(
+    browser_page: Page,
+    visitors: tuple[TestClient, TestClient],
+    clock: Clock,
+    model_server: ModelServer,
+) -> None:
+    for visitor in visitors:
+        assert visitor.post("/chat/conversation").status_code == 204
+    page = browser_page
+    draft = "What are the candidate's professional skills?"
+    page.locator("#chat-query").fill(draft)
+    before = model_server.answer_requests
+    page.locator("#submit-btn").click()
+    expect(page.locator("#chat-status")).to_have_text(
+        "Conversation capacity is temporarily full. Please try again later."
+    )
+    expect(page.locator("#response")).to_be_empty()
+    expect(page.locator("#chat-query")).to_have_value(draft)
+    expect(page.locator("#submit-btn")).to_be_enabled()
+    assert model_server.answer_requests == before
+
+    clock.advance(1800)
+    page.clock.fast_forward(3001)
+    page.locator("#submit-btn").click()
+    expect(page.locator("#response")).to_contain_text("Assistant: Topics:")
+    expect(page.locator("#chat-query")).to_have_value("")
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize("reload_before_submission", [False, True])
+def test_expired_submission_preserves_draft_and_requires_explicit_retry(
+    browser_page: Page,
+    clock: Clock,
+    model_server: ModelServer,
+    reload_before_submission: bool,
+) -> None:
+    page = browser_page
+    query = page.locator("#chat-query")
+    query.fill("Please remember my professional topic ALPHA.")
+    page.locator("#submit-btn").click()
+    expect(page.locator("#response")).to_contain_text("Assistant: Topics: ALPHA")
+    other_tab = page.context.new_page()
+    other_tab.goto(page.url)
+    other_tab.add_style_tag(content=".hidden { display: none !important; }")
+    expect(other_tab.locator("#response")).to_contain_text("Assistant: Topics: ALPHA")
+    other_tab.locator("#chat-query").fill("A separate unsent draft.")
+    clock.advance(1800)
+    if reload_before_submission:
+        page.reload()
+        page.add_style_tag(content=".hidden { display: none !important; }")
+        expect(page.locator("#chat-status")).to_have_text(
+            "Conversation expired after inactivity. Review and resubmit your question."
+        )
+    page.clock.fast_forward(3001)
+    draft = "Which professional topic did I mention earlier?"
+    query.fill(draft)
+    before = model_server.answer_requests
+    page.locator("#submit-btn").click()
+    expect(page.locator("#chat-status")).to_have_text(
+        "Conversation expired after inactivity. Review and resubmit your question."
+    )
+    expect(page.locator("#response")).to_be_empty()
+    expect(query).to_have_value(draft)
+    expect(page.locator("#submit-btn")).to_be_enabled()
+    expect(other_tab.locator("#response")).to_be_empty()
+    expect(other_tab.locator("#chat-status")).to_have_text(
+        "Conversation expired after inactivity. Review and resubmit your question."
+    )
+    expect(other_tab.locator("#chat-query")).to_have_value("A separate unsent draft.")
+    assert model_server.answer_requests == before
+
+    page.clock.fast_forward(3001)
+    page.locator("#submit-btn").click()
+    expect(page.locator("#response")).to_contain_text("Assistant: Topics:")
+    expect(page.locator("#response")).not_to_contain_text("ALPHA")
+    expect(query).to_have_value("")
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize("conversation_max_turns", [2], indirect=True)
+def test_browser_shows_only_the_configured_context_window(
+    browser_page: Page,
+) -> None:
+    page = browser_page
+    expect(
+        page.get_by_text(
+            "Only the latest 2 completed question/answer pairs are remembered and displayed."
+        )
+    ).to_be_visible()
+    questions = [
+        "Please remember my professional topic ALPHA.",
+        "Describe the candidate's skills, request 0.",
+        "Describe the candidate's skills, request 1.",
+        "Which professional topic did I mention earlier?",
+    ]
+    for question in questions:
+        page.locator("#chat-query").fill(question)
+        page.locator("#submit-btn").click()
+        expect(page.locator("#submit-btn")).to_be_enabled()
+        page.clock.fast_forward(3001)
+
+    transcript = page.locator("#response")
+    expect(transcript.locator(":scope > div")).to_have_count(4)
+    expect(transcript).not_to_contain_text(questions[0])
+    expect(transcript).not_to_contain_text(questions[1])
+    expect(transcript.locator(":scope > div").last).to_have_text("Assistant: Topics: ")
+    page.reload()
+    expect(transcript.locator(":scope > div")).to_have_count(4)
+    expect(transcript).to_contain_text(questions[-1])
 
 
 @pytest.mark.browser

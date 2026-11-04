@@ -217,13 +217,21 @@ class ChatRAGPipeline:
                 conversation.append_turn(query, result["answer"], revision=revision)
 
             rag_logger.info("Chat completion processed successfully")
-            return {"answer": result, "sources": result.get("context", [])}
+            return {
+                "answer": result,
+                "sources": result.get("context", []),
+                "completed": True,
+            }
 
         except ConversationReset:
             raise
         except ValueError as validation_error:
             rag_logger.warning(f"Query validation failed: {validation_error!s}")
-            return {"answer": {"answer": str(validation_error)}, "sources": []}
+            return {
+                "answer": {"answer": str(validation_error)},
+                "sources": [],
+                "completed": False,
+            }
         except Exception:
             rag_logger.exception("Unexpected error in chat completion")
             formatted_fallback = self.config.chat_fallback_response.format(
@@ -232,6 +240,7 @@ class ChatRAGPipeline:
             return {
                 "answer": {"answer": formatted_fallback},
                 "sources": [],
+                "completed": False,
             }
 
 

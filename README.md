@@ -373,6 +373,28 @@ successful login/logout reset conversation context. Restarts lose that context;
 resets do not delete external provider records or diagnostic traces. Durable
 storage and shared multi-worker state remain separate follow-ups.
 
+Model context and the displayed transcript retain only the latest 20 completed
+question/answer pairs. Set `CONVERSATION_MAX_TURNS` to a positive integer in
+`.env` to change this window; restart the app after changing it.
+
+Only successfully generated, validated answers enter conversation history.
+Failed attempts appear as notices, not assistant turns, and retain the question
+for editing or manual retry without changing earlier successful context.
+
+Idle context expires after 30 minutes (`CONVERSATION_IDLE_MINUTES`, positive
+integer). Successful turns and explicit resets renew the idle period; passive
+reads and cookie preparation do not. Expiry is checked on access and before
+accepting generated answers, not by a background timer. The browser explains
+the reset and preserves a submitted question for manual resubmission, without
+automatically generating an answer using empty context.
+
+At most 100 visitor conversations are tracked (`CONVERSATION_CAPACITY`, positive
+integer; restart after changes). Creating a conversation first reclaims expired
+entries; active histories are never evicted to admit another visitor. If still
+full, new visitors receive HTTP 503 and keep their draft for a later manual
+retry. Returning visitors whose state was reclaimed receive the expiry notice
+before starting fresh. This limits tracked state, not already-running inference.
+
 Only one chat generation may run per conversation. Overlapping requests receive
 HTTP 409; the browser keeps the question for an explicit retry instead of
 automatically resending it. Clear invalidates pending output but does not cancel

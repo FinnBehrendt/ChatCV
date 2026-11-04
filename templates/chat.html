@@ -109,6 +109,9 @@
                          aria-label="Conversation history">
                     </div>
 
+                    <p class="text-sm text-gray-500 mb-2">
+                        Only the latest {{ conversation_max_turns }} completed question/answer pairs are remembered and displayed.
+                    </p>
                     <form id="chat-form" class="mt-2">
                         <label for="chat-query" class="sr-only">Enter your question</label>
                         <textarea id="chat-query"
@@ -226,6 +229,7 @@
 </section>
 
 <script>
+    const CONVERSATION_EXPIRED_NOTICE = 'Conversation expired after inactivity. Review and resubmit your question.';
     // Application State
     const AppState = {
         isAuthenticated: false,
@@ -370,6 +374,7 @@
             for (const message of data.messages) {
                 UIManager.addMessage(message.role, message.content);
             }
+            if (data.expired) Elements.chatStatus.textContent = CONVERSATION_EXPIRED_NOTICE;
             return true;
         }
 
@@ -440,7 +445,7 @@
 
         static initialize() {
             this.channel?.addEventListener('message', (event) => {
-                if (['turn', 'reset', 'auth'].includes(event.data)) {
+                if (['turn', 'reset', 'auth', 'expired'].includes(event.data)) {
                     this.refresh(event.data);
                 }
             });
@@ -451,7 +456,8 @@
         }
 
         static async refresh(change = 'turn') {
-            if (change === 'reset' || change === 'auth') UIManager.resetConversationView();
+            if (['reset', 'auth', 'expired'].includes(change)) UIManager.resetConversationView();
+            if (change === 'expired') Elements.chatStatus.textContent = CONVERSATION_EXPIRED_NOTICE;
             if (change === 'auth') this.authPending = true;
             this.pending = true;
             if (this.refreshing || AppState.isSubmitting ||
@@ -515,10 +521,12 @@
                 body: JSON.stringify({ query })
             });
 
-            if (response.status === 409 && response.headers.get('X-Conversation-Status') === 'busy') {
+            const status = response.headers.get('X-Conversation-Status');
+            if ((response.status === 409 && ['busy', 'expired'].includes(status)) ||
+                (response.status === 503 && status === 'capacity')) {
                 const data = await response.json();
                 const error = new Error(data.detail);
-                error.code = 'conversation_busy';
+                error.code = `conversation_${status}`;
                 throw error;
             }
             if (!response.ok) {
@@ -552,7 +560,9 @@
             if (!response.ok) {
                 throw new Error(`HTTP ${response.status}`);
             }
-            return response.json();
+            const data = await response.json();
+            data.expired = response.headers.get('X-Conversation-Status') === 'expired';
+            return data;
         }
 
         static async prepareConversation() {
@@ -566,6 +576,14 @@
                 const response = await this.makeAuthenticatedRequest('/chat/conversation', {
                     method: 'POST'
                 });
+                const status = response.headers.get('X-Conversation-Status');
+                if ((response.status === 409 && status === 'expired') ||
+                    (response.status === 503 && status === 'capacity')) {
+                    const data = await response.json();
+                    const error = new Error(data.detail);
+                    error.code = `conversation_${status}`;
+                    throw error;
+                }
                 if (!response.ok) {
                     throw new Error(`HTTP ${response.status}`);
                 }
@@ -777,7 +795,7 @@
             const validation = InputValidator.validateQuery(query);
 
             if (!validation.valid) {
-                UIManager.addMessage('assistant', validation.error);
+                Elements.chatStatus.textContent = validation.error;
                 return;
             }
 
@@ -811,12 +829,27 @@
                 if (revision !== AppState.conversationRevision) return;
 
                 const answer = data.answer?.answer || data.answer || 'No response available';
+                if (data.completed === false) {
+                    const error = new Error(answer);
+                    error.code = 'generation_failed';
+                    throw error;
+                }
                 UIManager.addMessage('assistant', answer);
+                while (Elements.responseDiv.childElementCount > {{ conversation_max_turns }} * 2) {
+                    Elements.responseDiv.firstElementChild.remove();
+                }
                 ConversationSync.notify('turn');
             } catch (error) {
                 loadingIndicator.remove();
                 if (revision !== AppState.conversationRevision) return;
-                if (error.code === 'conversation_busy' || error.code === 'session_setup_unavailable') {
+                if (error.code === 'conversation_expired') {
+                    UIManager.resetConversationView();
+                    Elements.chatQuery.value = query;
+                    Elements.chatStatus.textContent = CONVERSATION_EXPIRED_NOTICE;
+                    ConversationSync.notify('expired');
+                    return;
+                }
+                if (['conversation_busy', 'conversation_capacity', 'session_setup_unavailable', 'generation_failed'].includes(error.code)) {
                     userMessage.remove();
                     Elements.chatQuery.value = query;
                     Elements.chatStatus.textContent = error.message;
@@ -831,7 +864,9 @@
                     errorMessage = 'Rate limit exceeded. Please wait a moment.';
                 }
 
-                UIManager.addMessage('assistant', errorMessage);
+                userMessage.remove();
+                Elements.chatQuery.value = query;
+                Elements.chatStatus.textContent = errorMessage;
             } finally {
                 if (revision === AppState.conversationRevision) {
                     UIManager.setSubmitState(false);
