@@ -366,7 +366,21 @@ Give specific people access with custom invite codes.
 3. The LLM writes a natural response using that context (and chat history)
 4. Safety filters make sure everything stays professional
 
-Simple, but it works really well.
+Conversation history currently lives in one application process: use one worker,
+without replicas. Reload restores live history; tabs in the same browser profile
+use `BroadcastChannel` change signals to refresh it from the server. Clear and
+successful login/logout reset conversation context. Restarts lose that context;
+resets do not delete external provider records or diagnostic traces. Durable
+storage and shared multi-worker state remain separate follow-ups.
+
+Only one chat generation may run per conversation. Overlapping requests receive
+HTTP 409; the browser keeps the question for an explicit retry instead of
+automatically resending it. Clear invalidates pending output but does not cancel
+inference, so the conversation may remain busy until that request finishes.
+Browser session setup uses [Web Locks](https://www.w3.org/TR/web-locks/) to avoid
+two fresh tabs creating different sessions. Use a browser supporting Web Locks
+over HTTPS (or localhost for development); otherwise setup stops with a notice
+and preserves the question.
 
 ---
 

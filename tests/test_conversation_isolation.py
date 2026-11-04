@@ -1,9 +1,10 @@
 """Conversation behavior through HTTP, without external models or private data."""
 
+import asyncio
 import json
 import re
 import socket
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Event, Thread
@@ -12,8 +13,8 @@ from typing import Any
 import httpx
 import pytest
 import uvicorn
-from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse, Response
 from fastapi.testclient import TestClient
 from playwright.sync_api import Page, expect, sync_playwright
 from pypdf import PdfWriter
@@ -102,12 +103,27 @@ def model_server() -> ModelServer:
     return ModelServer()
 
 
+class PreparationGate:
+    """Delay one incoming bootstrap request before the real app handles it."""
+
+    def __init__(self) -> None:
+        self.pause_next = False
+        self.started = Event()
+        self.release = Event()
+
+
+@pytest.fixture
+def preparation_gate() -> PreparationGate:
+    return PreparationGate()
+
+
 @pytest.fixture
 def visitors(
     monkeypatch: MonkeyPatch,
     mocker: MockerFixture,
     tmp_path: Path,
     model_server: ModelServer,
+    preparation_gate: PreparationGate,
 ) -> Iterator[tuple[TestClient, TestClient]]:
     """Keep real routing, RAG, document loading and a disposable Chroma index."""
     monkeypatch.setenv("INVITE_CODES", "{}")
@@ -175,6 +191,22 @@ def visitors(
             ),
         )
         application = FastAPI()
+
+        @application.middleware("http")
+        async def delay_one_bootstrap(
+            request: Request, call_next: Callable[[Request], Awaitable[Response]]
+        ) -> Response:
+            if (
+                preparation_gate.pause_next
+                and request.method == "POST"
+                and request.url.path == "/chat/conversation"
+            ):
+                preparation_gate.pause_next = False
+                preparation_gate.started.set()
+                released = await asyncio.to_thread(preparation_gate.release.wait, 10)
+                assert released, "Test did not release the bootstrap request"
+            return await call_next(request)
+
         application.include_router(routes.router)
         application.add_api_route("/", main.index, response_class=HTMLResponse)
         with (
@@ -218,9 +250,10 @@ def browser_page(
             with sync_playwright() as playwright:
                 browser = playwright.chromium.launch()
                 try:
-                    page = browser.new_page()
+                    context = browser.new_context()
+                    page = context.new_page()
 
-                    page.route(
+                    page.context.route(
                         re.compile(r"^https?://(?!127\.0\.0\.1:)"),
                         lambda route: route.abort(),
                     )
@@ -258,6 +291,54 @@ def test_anonymous_visitors_keep_independent_follow_up_context(
         answers.append(data["answer"]["answer"])
 
     assert answers == ["Topics: ALPHA", "Topics: BETA", "Topics: ALPHA", "Topics: BETA"]
+
+
+@pytest.mark.parametrize("authenticated", [False, True])
+def test_visitors_can_read_only_their_current_transcript(
+    visitors: tuple[TestClient, TestClient],
+    monkeypatch: MonkeyPatch,
+    authenticated: bool,
+) -> None:
+    visitor_a, visitor_b = visitors
+    if authenticated:
+        monkeypatch.setattr(
+            auth,
+            "INVITE_CODES",
+            {"shared-code": {"active": True, "company": "Example Company"}},
+        )
+    for visitor, topic in ((visitor_a, "ALPHA"), (visitor_b, "BETA")):
+        if authenticated:
+            assert (
+                visitor.post(
+                    "/auth/login", json={"invite_code": "shared-code"}
+                ).status_code
+                == 200
+            )
+        question = f"Please remember my professional topic {topic}."
+        sent = visitor.post("/chat", json={"query": question})
+        assert sent.status_code == 200
+        transcript = visitor.get("/chat/conversation")
+        assert transcript.status_code == 200
+        assert transcript.headers["cache-control"] == "no-store"
+        assert transcript.json() == {
+            "messages": [
+                {"role": "user", "content": question},
+                {"role": "assistant", "content": f"Topics: {topic}"},
+            ]
+        }
+
+    cleared = visitor_a.delete("/chat/conversation")
+    assert cleared.status_code == 204
+    assert visitor_a.get("/chat/conversation").json() == {"messages": []}
+    assert visitor_b.get("/chat/conversation").json() == {
+        "messages": [
+            {"role": "user", "content": "Please remember my professional topic BETA."},
+            {"role": "assistant", "content": "Topics: BETA"},
+        ]
+    }
+    if authenticated:
+        assert visitor_a.post("/auth/logout").status_code == 200
+        assert visitor_a.get("/chat/conversation").status_code == 401
 
 
 def test_clear_resets_only_the_current_visitors_context(
@@ -387,6 +468,50 @@ def test_logout_resets_only_the_visitors_context_and_discards_a_pending_answer(
     )
     assert other_follow_up.status_code == 200
     assert other_follow_up.json()["answer"]["answer"] == "Topics: BETA"
+
+
+def test_busy_conversation_rejects_a_second_request_but_not_another_visitor(
+    visitors: tuple[TestClient, TestClient], model_server: ModelServer
+) -> None:
+    visitor_a, visitor_b = visitors
+    initial = visitor_a.post(
+        "/chat", json={"query": "Please remember my professional topic ALPHA."}
+    )
+    assert initial.status_code == 200
+    model_server.pause_next_answer = True
+    with ThreadPoolExecutor(max_workers=2) as requests:
+        pending = requests.submit(
+            visitor_a.post,
+            "/chat",
+            json={"query": "Which professional topic did I mention earlier?"},
+        )
+        try:
+            assert model_server.started.wait(timeout=5), "Model request never started"
+            busy = requests.submit(
+                visitor_a.post,
+                "/chat",
+                json={"query": "Please remember my professional topic BETA."},
+            ).result(timeout=2)
+            assert busy.status_code == 409
+            assert busy.json() == {
+                "detail": "Conversation is busy. Please wait for the current answer."
+            }
+            other = requests.submit(
+                visitor_b.post,
+                "/chat",
+                json={"query": "Please remember my professional topic BETA."},
+            ).result(timeout=2)
+            assert other.status_code == 200
+            assert other.json()["answer"]["answer"] == "Topics: BETA"
+        finally:
+            model_server.release.set()
+        assert pending.result(timeout=5).status_code == 200
+
+    recovered = visitor_a.post(
+        "/chat", json={"query": "Which professional topic did I mention earlier?"}
+    )
+    assert recovered.status_code == 200
+    assert recovered.json()["answer"]["answer"] == "Topics: ALPHA"
 
 
 def test_clear_discards_an_in_flight_answer(
@@ -588,3 +713,306 @@ def test_failed_logout_keeps_the_authenticated_conversation(
     expect(page.locator("#response > div").last).to_have_text(
         "Assistant: Topics: ALPHA"
     )
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize("browser_page", [False, True], indirect=True)
+def test_reload_restores_live_history_but_never_cleared_history(
+    browser_page: Page,
+) -> None:
+    page = browser_page
+    if page.locator("#login-modal").is_visible():
+        page.locator("#invite-code").fill("shared-code")
+        page.locator("#login-form button").click()
+        expect(page.locator("#login-modal")).to_be_hidden()
+    question = (
+        "Please remember my professional topic ALPHA. Keep <b>literal</b> as text."
+    )
+    page.locator("#chat-query").fill(question)
+    page.locator("#submit-btn").click()
+    expect(page.locator("#response")).to_contain_text("Assistant: Topics: ALPHA")
+
+    for cleared in (False, True):
+        if cleared:
+            page.locator("#clear-chat").click()
+            expect(page.locator("#response")).to_be_empty()
+        with page.expect_response(
+            lambda response: response.request.method == "GET"
+            and response.url.endswith("/chat/conversation"),
+            timeout=3000,
+        ) as restored:
+            page.reload()
+        assert restored.value.status == 200
+        page.add_style_tag(content=".hidden { display: none !important; }")
+        expect(page.locator("#login-modal")).to_be_hidden()
+        expect(page.locator("#submit-btn")).to_be_enabled()
+        if cleared:
+            expect(page.locator("#response")).to_be_empty()
+        else:
+            expect(page.locator("#response > div")).to_have_text(
+                [
+                    f"You: {question}",
+                    "Assistant: Topics: ALPHA",
+                ]
+            )
+
+
+@pytest.mark.browser
+def test_failed_restore_requires_retry_before_accepting_more_questions(
+    browser_page: Page,
+) -> None:
+    page = browser_page
+    page.locator("#chat-query").fill("Please remember my professional topic ALPHA.")
+    page.locator("#submit-btn").click()
+    expect(page.locator("#response")).to_contain_text("Assistant: Topics: ALPHA")
+    pattern = "**/chat/conversation"
+    page.route(
+        pattern,
+        lambda route: (
+            route.abort() if route.request.method == "GET" else route.continue_()
+        ),
+    )
+    page.reload()
+    expect(page.locator("#chat-status")).to_have_text(
+        "Could not restore the conversation. Reload to retry."
+    )
+    expect(page.locator("#submit-btn")).to_be_disabled()
+    expect(page.locator("#clear-chat")).to_be_disabled()
+
+    page.unroute(pattern)
+    page.reload()
+    expect(page.locator("#submit-btn")).to_be_enabled()
+    expect(page.locator("#response > div")).to_have_text(
+        [
+            "You: Please remember my professional topic ALPHA.",
+            "Assistant: Topics: ALPHA",
+        ]
+    )
+
+
+@pytest.mark.browser
+def test_tabs_share_completed_turns_and_clear_without_syncing_other_profiles(
+    browser_page: Page,
+) -> None:
+    first = browser_page
+    first.locator("#chat-query").fill("Please remember my professional topic ALPHA.")
+    first.locator("#submit-btn").click()
+    expect(first.locator("#response")).to_contain_text("Assistant: Topics: ALPHA")
+
+    second = first.context.new_page()
+    second.goto(first.url)
+    second.add_style_tag(content=".hidden { display: none !important; }")
+    expect(second.locator("#response")).to_contain_text("Assistant: Topics: ALPHA")
+    browser = first.context.browser
+    assert browser is not None
+    other_profile = browser.new_context()
+    try:
+        other_profile.route(
+            re.compile(r"^https?://(?!127\.0\.0\.1:)"), lambda route: route.abort()
+        )
+        outsider = other_profile.new_page()
+        outsider.goto(first.url)
+        expect(outsider.locator("#submit-btn")).to_be_enabled()
+        outsider.locator("#chat-query").fill(
+            "Please remember my professional topic BETA."
+        )
+        outsider.locator("#submit-btn").click()
+        expect(outsider.locator("#response")).to_contain_text("Assistant: Topics: BETA")
+
+        second.locator("#chat-query").fill(
+            "Which professional topic did I mention earlier?"
+        )
+        second.locator("#submit-btn").click()
+        expect(second.locator("#response > div")).to_have_count(4)
+        expect(first.locator("#response > div")).to_have_text(
+            [
+                "You: Please remember my professional topic ALPHA.",
+                "Assistant: Topics: ALPHA",
+                "You: Which professional topic did I mention earlier?",
+                "Assistant: Topics: ALPHA",
+            ]
+        )
+        expect(outsider.locator("#response > div")).to_have_count(2)
+        expect(outsider.locator("#response")).not_to_contain_text("ALPHA")
+
+        second.locator("#clear-chat").click()
+        expect(second.locator("#response")).to_be_empty()
+        expect(first.locator("#response")).to_be_empty()
+        expect(outsider.locator("#response")).to_contain_text("Assistant: Topics: BETA")
+    finally:
+        other_profile.close()
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize("browser_page", [True], indirect=True)
+@pytest.mark.parametrize("transition", ["clear", "logout_login"])
+def test_tabs_discard_pending_answers_after_clear_or_auth_changes(
+    browser_page: Page, model_server: ModelServer, transition: str
+) -> None:
+    first = browser_page
+    first.locator("#invite-code").fill("shared-code")
+    first.locator("#login-form button").click()
+    expect(first.locator("#login-modal")).to_be_hidden()
+    first.locator("#chat-query").fill("Please remember my professional topic ALPHA.")
+    first.locator("#submit-btn").click()
+    expect(first.locator("#response")).to_contain_text("Assistant: Topics: ALPHA")
+    second = first.context.new_page()
+    second.goto(first.url)
+    second.add_style_tag(content=".hidden { display: none !important; }")
+    expect(second.locator("#response")).to_contain_text("Assistant: Topics: ALPHA")
+    first.clock.fast_forward(3001)
+    model_server.pause_next_answer = True
+    first.locator("#chat-query").fill("Which professional topic did I mention earlier?")
+    with first.expect_request(
+        lambda request: request.method == "POST" and request.url.endswith("/chat")
+    ):
+        first.locator("#submit-btn").click()
+
+    try:
+        assert model_server.started.wait(timeout=5), "Model request never started"
+        if transition == "clear":
+            second.locator("#clear-chat").click()
+        else:
+            second.locator("#logout-btn").click()
+            expect(second.locator("#login-modal")).to_be_visible()
+            expect(first.locator("#login-modal")).to_be_visible()
+            expect(first.locator("#user-info")).to_be_hidden()
+            expect(first.locator("#response")).to_be_empty()
+            second.locator("#invite-code").fill("shared-code")
+            second.locator("#login-form button").click()
+        expect(first.locator("#response")).to_be_empty()
+        expect(first.locator("#login-modal")).to_be_hidden()
+        expect(first.locator("#user-info")).to_be_visible()
+        with first.expect_response("**/chat") as pending:
+            model_server.release.set()
+        assert pending.value.status == 409
+        expect(first.locator("#response")).to_be_empty()
+    finally:
+        model_server.release.set()
+
+    first.clock.fast_forward(3001)
+    first.locator("#chat-query").fill("Which professional topic did I mention earlier?")
+    first.locator("#submit-btn").click()
+    expect(first.locator("#response")).to_contain_text("Assistant: Topics:")
+    expect(second.locator("#response > div")).to_have_text(
+        ["You: Which professional topic did I mention earlier?", "Assistant: Topics:"]
+    )
+
+
+@pytest.mark.browser
+def test_busy_tab_keeps_the_question_for_explicit_retry(
+    browser_page: Page, model_server: ModelServer
+) -> None:
+    first = browser_page
+    first.locator("#chat-query").fill("Please remember my professional topic ALPHA.")
+    first.locator("#submit-btn").click()
+    expect(first.locator("#response")).to_contain_text("Assistant: Topics: ALPHA")
+    second = first.context.new_page()
+    second.goto(first.url)
+    expect(second.locator("#response")).to_contain_text("Assistant: Topics: ALPHA")
+    first.clock.fast_forward(3001)
+    model_server.pause_next_answer = True
+    first.locator("#chat-query").fill("Which professional topic did I mention earlier?")
+    with first.expect_request("**/chat"):
+        first.locator("#submit-btn").click()
+    question = "Please remember my professional topic BETA."
+    try:
+        assert model_server.started.wait(timeout=5), "Model request never started"
+        second.locator("#chat-query").fill(question)
+        with second.expect_response("**/chat") as rejected:
+            second.locator("#submit-btn").click()
+        assert rejected.value.status == 409
+        expect(second.locator("#chat-query")).to_have_value(question)
+        expect(second.locator("#chat-status")).to_have_text(
+            "Conversation is busy. Please wait for the current answer."
+        )
+        expect(second.locator("#response > div")).to_have_count(2)
+        with first.expect_response("**/chat"):
+            model_server.release.set()
+        expect(second.locator("#response > div")).to_have_count(4)
+        expect(second.locator("#chat-query")).to_have_value(question)
+    finally:
+        model_server.release.set()
+
+    second.clock.fast_forward(3001)
+    second.locator("#submit-btn").click()
+    expect(second.locator("#response > div").last).to_have_text(
+        "Assistant: Topics: ALPHA, BETA"
+    )
+    expect(first.locator("#response > div")).to_have_count(6)
+
+
+@pytest.mark.browser
+def test_fresh_tabs_bootstrap_one_session_before_parallel_generation(
+    browser_page: Page, model_server: ModelServer, preparation_gate: PreparationGate
+) -> None:
+    first = browser_page
+    second = first.context.new_page()
+    second.goto(first.url)
+    expect(second.locator("#submit-btn")).to_be_enabled()
+    preparation_gate.pause_next = True
+    model_server.pause_next_answer = True
+    first.locator("#chat-query").fill("Please remember my professional topic ALPHA.")
+    first.locator("#submit-btn").click()
+    try:
+        assert preparation_gate.started.wait(timeout=5), "Bootstrap never started"
+        second.locator("#chat-query").fill(
+            "Please remember my professional topic BETA."
+        )
+        second.locator("#submit-btn").click()
+        # Let an uncoordinated second tab reach the model before releasing the
+        # first bootstrap. Correct coordination keeps it waiting instead.
+        model_server.started.wait(timeout=2)
+        with first.context.expect_event(
+            "response",
+            predicate=lambda response: response.url.endswith("/chat")
+            and response.status == 409,
+            timeout=3000,
+        ) as rejected:
+            preparation_gate.release.set()
+        assert model_server.started.wait(timeout=5), "Model request never started"
+        rejected_question = rejected.value.request.post_data_json["query"]
+        with first.context.expect_event(
+            "response",
+            predicate=lambda response: response.url.endswith("/chat")
+            and response.status == 200,
+        ) as accepted:
+            model_server.release.set()
+        accepted_question = accepted.value.request.post_data_json["query"]
+        topic = "ALPHA" if "ALPHA" in accepted_question else "BETA"
+        for page in (first, second):
+            expect(page.locator("#response > div")).to_have_text(
+                [f"You: {accepted_question}", f"Assistant: Topics: {topic}"]
+            )
+        assert sorted(
+            page.locator("#chat-query").input_value() for page in (first, second)
+        ) == sorted(["", rejected_question])
+    finally:
+        preparation_gate.release.set()
+        model_server.release.set()
+
+
+@pytest.mark.browser
+def test_unavailable_browser_coordination_preserves_input_without_sending_it(
+    browser_page: Page,
+) -> None:
+    page = browser_page
+    page.add_init_script(
+        "Object.defineProperty(navigator, 'locks', {value: undefined});"
+    )
+    page.reload()
+    expect(page.locator("#submit-btn")).to_be_enabled()
+    requests: list[str] = []
+    page.on("request", lambda request: requests.append(request.url))
+    question = "Please remember my professional topic ALPHA."
+    page.locator("#chat-query").fill(question)
+    page.locator("#submit-btn").click()
+    expect(page.locator("#chat-status")).to_have_text(
+        "Session setup requires a browser with Web Locks over HTTPS or localhost."
+    )
+    expect(page.locator("#chat-query")).to_have_value(question)
+    expect(page.locator("#response")).to_be_empty()
+    assert not any(url.endswith("/chat") for url in requests)
+    assert page.request.get(f"{page.url.rstrip('/')}/chat/conversation").json() == {
+        "messages": []
+    }

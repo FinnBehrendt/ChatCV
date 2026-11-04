@@ -14,6 +14,7 @@ from app.auth.auth import (
 )
 from app.config import config
 from app.modules.conversations import (
+    ConversationBusy,
     ConversationReset,
     ConversationStore,
     get_conversation_store,
@@ -143,6 +144,27 @@ async def auth_status(request: Request):
     return {"authenticated": False, "auth_enabled": True}
 
 
+@router.get("/chat/conversation")
+async def read_conversation(
+    request: Request,
+    response: Response,
+    conversations: Annotated[ConversationStore, Depends(get_conversation_store)],
+    user_code: str = Depends(require_auth),
+) -> dict[str, list[dict[str, str]]]:
+    """Return only the current visitor's completed conversation turns."""
+    response.headers["Cache-Control"] = "no-store"
+    messages = conversations.read(request.cookies.get("visitor_session"))
+    return {
+        "messages": [
+            {
+                "role": "user" if message.type == "human" else "assistant",
+                "content": str(message.content),
+            }
+            for message in messages
+        ]
+    }
+
+
 @router.post("/chat/conversation", status_code=204)
 async def prepare_conversation(
     request: Request,
@@ -220,6 +242,12 @@ async def chat(
             user_metadata=user_metadata,
             conversation=conversation,
         )
+    except ConversationBusy as error:
+        raise HTTPException(
+            status_code=409,
+            detail="Conversation is busy. Please wait for the current answer.",
+            headers={"X-Conversation-Status": "busy"},
+        ) from error
     except ConversationReset as error:
         raise HTTPException(
             status_code=409, detail="Conversation was reset; answer discarded."

@@ -6,6 +6,7 @@ for interactive resume querying using LangChain, ChromaDB, and various LLM provi
 """
 
 import threading
+from contextlib import nullcontext
 from typing import Any
 
 from dotenv import load_dotenv
@@ -248,8 +249,9 @@ def get_chat_completion(
 ) -> dict[str, Any]:
     """Get chat completion using thread-safe pipeline."""
     rag_logger.info("get_chat_completion invoked")
-    pipeline = get_chat_pipeline()
-    return pipeline.get_completion(query, user_metadata, conversation=conversation)
+    with conversation.generation() if conversation is not None else nullcontext():
+        pipeline = get_chat_pipeline()
+        return pipeline.get_completion(query, user_metadata, conversation=conversation)
 
 
 if __name__ == "__main__":
