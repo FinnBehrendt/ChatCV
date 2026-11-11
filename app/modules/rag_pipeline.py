@@ -6,16 +6,16 @@ for interactive resume querying using LangChain, ChromaDB, and various LLM provi
 """
 
 import threading
-from typing import Any
+from typing import Any, ClassVar
 
 from dotenv import load_dotenv
 from langchain.chains import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain.chains.history_aware_retriever import create_history_aware_retriever
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.runnables import RunnableLambda
+from langchain_core.runnables import Runnable, RunnableLambda
 
-from app.config import config
+from app.config import AppConfig, config
 from app.modules.conversations import Conversation, ConversationReset, Generation
 from app.modules.guardrails import QueryValidator
 from app.modules.model_provider import ModelProvider
@@ -65,25 +65,27 @@ load_dotenv()
 class ChatRAGPipeline:
     """Main RAG pipeline for ChatCV with thread-safe singleton pattern and modular components."""
 
-    _instance = None
+    _instance: ClassVar["ChatRAGPipeline | None"] = None
     _lock = threading.Lock()
+    _initialized: bool = False
 
-    def __new__(cls):
-        """Thread-safe singleton implementation"""
+    def __new__(cls, settings: AppConfig | None = None):
+        """Share the default pipeline and allow independently configured runs."""
+        if settings is not None:
+            return super().__new__(cls)
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
                     cls._instance = super().__new__(cls)
-                    cls._instance._initialized = False
         return cls._instance
 
-    def __init__(self):
+    def __init__(self, settings: AppConfig | None = None):
         """Initialize pipeline only once"""
-        if hasattr(self, "_initialized") and self._initialized:
+        if self._initialized:
             return
 
-        rag_logger.info("Initializing ChatRAGPipeline singleton instance")
-        self.config = config
+        rag_logger.info("Initializing ChatRAGPipeline instance")
+        self.config = settings if settings is not None else config
 
         # Initialize modular components
         self.model_provider = ModelProvider(self.config, rag_logger)
@@ -91,7 +93,7 @@ class ChatRAGPipeline:
         self.document_manager = DocumentHandler(self.config, rag_logger)
         self.query_validator = QueryValidator(self.config, rag_logger)
 
-        self.qa_chain = None
+        self.qa_chain: Runnable[Any, Any] | None = None
         self._chain_lock = threading.Lock()
         self._initialized = True
         rag_logger.info("ChatRAGPipeline instance setup complete")
@@ -206,6 +208,9 @@ class ChatRAGPipeline:
             else (0, [])
         )
         self._initialize_qa_chain()
+        chain = self.qa_chain
+        if chain is None:
+            raise RuntimeError("RAG QA chain was not initialized")
 
         # Add user metadata to LangSmith tracing
         current_run = langsmith.get_current_run_tree()
@@ -214,9 +219,7 @@ class ChatRAGPipeline:
 
         try:
             # Process query through RAG pipeline
-            result = self.qa_chain.invoke(
-                {"input": query, "chat_history": current_history}
-            )
+            result = chain.invoke({"input": query, "chat_history": current_history})
 
             if conversation is not None:
                 conversation.append_turn(query, result["answer"], revision=revision)

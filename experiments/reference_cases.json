@@ -1,0 +1,170 @@
+[
+  {
+    "case_id": "cv-deployment-time-01",
+    "answerability": "full",
+    "question": "By what percentage did the candidate reduce deployment time by implementing CI/CD pipelines?",
+    "expected_facts": ["The candidate reduced deployment time by 75 percent through CI/CD pipelines."],
+    "expected_evidence": ["Page 2: Implemented CI/CD pipelines reducing deployment time by 75%"],
+    "expected_gap": null
+  },
+  {
+    "case_id": "cv-deployment-rollout-02",
+    "answerability": "partial",
+    "question": "By what percentage did the candidate reduce deployment time by implementing CI/CD pipelines, and how long did that implementation take?",
+    "expected_facts": ["The candidate reduced deployment time by 75 percent through CI/CD pipelines."],
+    "expected_evidence": ["Page 2: Implemented CI/CD pipelines reducing deployment time by 75%"],
+    "expected_gap": "The resume does not specify how long the CI/CD implementation took."
+  },
+  {
+    "case_id": "cv-masters-university-03",
+    "answerability": "none",
+    "question": "Which university awarded the candidate's master's degree in Computer Science?",
+    "expected_facts": [],
+    "expected_evidence": [],
+    "expected_gap": "The resume names the degree but does not identify the university."
+  },
+  {
+    "case_id": "cv-degree-focus-04",
+    "answerability": "full",
+    "question": "What degree did the candidate earn, and what were its two areas of focus?",
+    "expected_facts": [
+      "The candidate earned a master's degree in Computer Science.",
+      "The degree focused on machine learning.",
+      "The degree focused on distributed systems."
+    ],
+    "expected_evidence": ["Page 1: John holds a Master's degree in Computer Science with a focus on machine learning and distributed systems."],
+    "expected_gap": null
+  },
+  {
+    "case_id": "cv-technical-languages-05",
+    "answerability": "full",
+    "question": "Which languages are listed in the candidate's technical skills?",
+    "expected_facts": ["Python is listed.", "JavaScript is listed.", "TypeScript is listed.", "Go is listed.", "SQL is listed."],
+    "expected_evidence": ["Page 2: **Languages:** Python, JavaScript, TypeScript, Go, SQL"],
+    "expected_gap": null
+  },
+  {
+    "case_id": "cv-web-frameworks-06",
+    "answerability": "full",
+    "question": "What technologies does the resume list alongside React and Node.js in the Frameworks entry?",
+    "expected_facts": ["FastAPI is listed.", "Django is listed.", "Flask is listed."],
+    "expected_evidence": ["Page 2: **Frameworks:** FastAPI, React, Node.js, Django, Flask"],
+    "expected_gap": null
+  },
+  {
+    "case_id": "cv-cloud-platforms-07",
+    "answerability": "full",
+    "question": "Which cloud platforms are listed in the candidate's technical skills?",
+    "expected_facts": ["AWS is listed.", "Azure is listed.", "Google Cloud Platform is listed."],
+    "expected_evidence": ["Page 2: **Cloud Platforms:** AWS, Azure, Google Cloud Platform"],
+    "expected_gap": null
+  },
+  {
+    "case_id": "cv-databases-08",
+    "answerability": "full",
+    "question": "What systems are named in the Databases entry?",
+    "expected_facts": ["PostgreSQL is listed.", "MongoDB is listed.", "Redis is listed.", "Elasticsearch is listed."],
+    "expected_evidence": ["Page 2: **Databases:** PostgreSQL, MongoDB, Redis, Elasticsearch"],
+    "expected_gap": null
+  },
+  {
+    "case_id": "cv-technical-tools-09",
+    "answerability": "full",
+    "question": "What other tools are listed alongside Docker and Kubernetes?",
+    "expected_facts": ["Git is listed.", "Linux is listed.", "Terraform is listed."],
+    "expected_evidence": ["Page 2: **Tools:** Docker, Kubernetes, Git, Linux, Terraform"],
+    "expected_gap": null
+  },
+  {
+    "case_id": "cv-microservices-users-10",
+    "answerability": "full",
+    "question": "How many daily active users did the microservices architecture serve?",
+    "expected_facts": ["The microservices architecture served more than 100,000 daily active users."],
+    "expected_evidence": ["Page 2: Led development of microservices architecture serving 100K+ daily active users"],
+    "expected_gap": null
+  },
+  {
+    "case_id": "cv-analytics-throughput-11",
+    "answerability": "full",
+    "question": "What daily event volume did the real-time analytics platform process?",
+    "expected_facts": ["The platform processed more than one million events per day."],
+    "expected_evidence": ["Page 2: Designed and built real-time analytics platform processing 1M+ events per day"],
+    "expected_gap": null
+  },
+  {
+    "case_id": "cv-open-source-stars-12",
+    "answerability": "full",
+    "question": "What GitHub star count does the resume report for the open-source projects the candidate contributed to?",
+    "expected_facts": ["The resume reports 1,000 or more GitHub stars for those open-source projects."],
+    "expected_evidence": ["Page 2: Contributed to open-source projects with 1000+ GitHub stars"],
+    "expected_gap": null
+  },
+  {
+    "case_id": "cv-profile-specializations-13",
+    "answerability": "full",
+    "question": "Which three specializations are named in the opening professional profile?",
+    "expected_facts": [
+      "The profile names full-stack web development.",
+      "The profile names cloud infrastructure.",
+      "The profile names AI/ML systems."
+    ],
+    "expected_evidence": ["Page 1: John Doe is a results-driven software engineer specializing in full-stack web development, cloud infrastructure, and AI/ML systems."],
+    "expected_gap": null
+  },
+  {
+    "case_id": "cv-documentation-philosophy-14",
+    "answerability": "full",
+    "question": "What does the technical philosophy say about documentation and sharing knowledge?",
+    "expected_facts": ["The candidate emphasizes clear technical documentation.", "The candidate emphasizes sharing knowledge with team members."],
+    "expected_evidence": ["Page 1: Clear technical documentation and knowledge sharing with team members"],
+    "expected_gap": null
+  },
+  {
+    "case_id": "cv-analytics-hosting-15",
+    "answerability": "partial",
+    "question": "What daily event volume did the analytics platform process, and which cloud provider hosted it?",
+    "expected_facts": ["The platform processed more than one million events per day."],
+    "expected_evidence": ["Page 2: Designed and built real-time analytics platform processing 1M+ events per day"],
+    "expected_gap": "The resume does not identify the platform's hosting provider. The general list of cloud platforms does not establish where this project ran."
+  },
+  {
+    "case_id": "cv-microservices-team-16",
+    "answerability": "partial",
+    "question": "How many daily active users did the microservices architecture serve, and how large was the development team?",
+    "expected_facts": ["The architecture served more than 100,000 daily active users."],
+    "expected_evidence": ["Page 2: Led development of microservices architecture serving 100K+ daily active users"],
+    "expected_gap": "The resume does not state the size of the development team."
+  },
+  {
+    "case_id": "cv-degree-year-17",
+    "answerability": "partial",
+    "question": "What master's degree did the candidate earn, and in which year did he graduate?",
+    "expected_facts": ["The candidate earned a master's degree in Computer Science."],
+    "expected_evidence": ["Page 1: John holds a Master's degree in Computer Science with a focus on machine learning and distributed systems."],
+    "expected_gap": "The resume does not state a graduation year."
+  },
+  {
+    "case_id": "cv-analytics-employer-18",
+    "answerability": "none",
+    "question": "Which company employed the candidate when he built the real-time analytics platform?",
+    "expected_facts": [],
+    "expected_evidence": [],
+    "expected_gap": "The resume describes the project without naming an employer."
+  },
+  {
+    "case_id": "cv-aws-certification-19",
+    "answerability": "none",
+    "question": "Which AWS certification does the candidate hold?",
+    "expected_facts": [],
+    "expected_evidence": [],
+    "expected_gap": "The resume lists AWS as a platform and does not state an AWS certification."
+  },
+  {
+    "case_id": "cv-analytics-language-20",
+    "answerability": "none",
+    "question": "Which programming language did the candidate use to build the real-time analytics platform?",
+    "expected_facts": [],
+    "expected_evidence": [],
+    "expected_gap": "The resume lists languages but does not associate any of them with this project."
+  }
+]

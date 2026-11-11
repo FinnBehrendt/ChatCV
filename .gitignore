@@ -35,6 +35,12 @@ htmlcov/
 # Vector database
 data/vector_db/
 
+# Local MLflow tracking data
+/mlflow.db
+/mlflow.db-*
+/mlartifacts/
+/mlruns/
+
 # Analytics and logs
 data/analytics.log
 logs
